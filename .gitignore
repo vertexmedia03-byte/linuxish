@@ -1,0 +1,34 @@
+build/
+xcuserdata/
+.floo
+
+cross-*.txt
+root.tar.gz
+
+node_modules
+app/xtermjs/xterm-dist
+app/xtermjs/.cache
+
+subprojects/
+!subprojects/*.wrap
+
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots
+fastlane/test_output
+
+e2e_out/
+
+# Legacy bench scripts (replaced by benchmark/)
+bench/
+tools/prebuilt_gadget_gen/__pycache__/
+tools/prebuilt_gadget_gen/*.bak
+.cache/
+
+# Recorded AOT images (large, per-build); regenerate them as benchmark/aojit/README.md says
+benchmark/aojit/images/
+# Local list of the AOT images the ARM64 app links (see app/AppARM64.xcconfig)
+app/AOTImages.local.xcconfig
+
+# IPA archives and exports (benchmark/aojit/README.md, "Link")
+build-ipa/

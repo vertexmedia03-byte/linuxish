@@ -1,0 +1,34 @@
+#include "App.xcconfig"
+#include "GuestARM64.xcconfig"
+
+// Differentiate the ARM64 app from the x86 app
+PRODUCT_NAME = iSH ARM64
+PRODUCT_BUNDLE_IDENTIFIER = $(ROOT_BUNDLE_IDENTIFIER).arm64
+PRODUCT_APP_GROUP_IDENTIFIER = group.$(ROOT_BUNDLE_IDENTIFIER).arm64
+
+// ARM64 app version, independent of the shared x86 MARKETING_VERSION.
+MARKETING_VERSION = 2.1.0
+
+// Build number must increase across the whole app regardless of marketing
+// version; 805 was the last one used. Overridden here (not in the shared
+// Project*.xcconfig) so the x86 app is unaffected.
+CURRENT_PROJECT_VERSION = 806
+
+// Link meson-built libraries directly from the arm64 meson build dir.
+// These are NOT in the Frameworks build phase to prevent Xcode from
+// auto-discovering implicit dependencies on the x86 library targets.
+OTHER_LDFLAGS = $(inherited) $(MESON_BUILD_DIR)/libish.a $(MESON_BUILD_DIR)/libish_emu.a $(MESON_BUILD_DIR)/libfakefs.a $(ISH_AOT_OBJECTS)
+
+// AOT images the app links in as extra objects: aot_<name>.S from
+// tools/jit_aot/gen.py, assembled for iOS, passed as .o paths. They are not
+// part of ish and need ISH_ENABLE_JIT = YES (see GuestARM64.xcconfig and
+// asbestos/guest-arm64/aot.h). Set them on the xcodebuild command line, or in
+// app/AOTImages.local.xcconfig (not committed; benchmark/aojit/README.md):
+//   ISH_AOT_OBJECTS = $(SRCROOT)/benchmark/aojit/images/<abi>/latest/ios/aot_musl_ios.o ...
+// The images must match the build's abi (JIT_CODE_VERSION), or ish rejects them.
+ISH_AOT_OBJECTS =
+#include? "AOTImages.local.xcconfig"
+
+// Header search paths needed for sources compiled directly in this target
+// (previously compiled in libiSHApp, which used AppLib.xcconfig)
+HEADER_SEARCH_PATHS = $(inherited) $(SRCROOT) $(SRCROOT)/deps/libarchive/libarchive
