@@ -34,7 +34,6 @@ jobs:
             -scheme iSH-ARM64 \
             -configuration Release \
             -destination 'generic/platform=iOS' \
-            -arch arm64 \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             CODE_SIGNING_ALLOWED=NO \
             clean build
