@@ -1207,7 +1207,22 @@ static bool emit_insn(struct em *e, uint32_t x, uint64_t pc, unsigned spos, bool
         if (((x >> 10) & 0x3f) > 5) return false;
         out = remap(e, x, F_ZR, F_ZR, F_NONE, F_NONE, false, &wrote);
     } else if ((x & 0x1F000000u) == 0x1B000000u) {         // data-processing 3 source
-        out = remap(e, x, F_ZR, F_ZR, F_ZR, F_ZR, false, &wrote);
+        int rn = (x >> 5) & 31, rm = (x >> 16) & 31, ra = (x >> 10) & 31;
+        int hn = rn == 31 ? 31 : hreg(e, rn);
+        int hm = rm == 31 ? 31 : hreg(e, rm);
+        int ha = ra == 31 ? 31 : hreg(e, ra);
+        uint32_t fields = (31u << 0) | (31u << 5) | (31u << 10) | (31u << 16);
+        out = (x & ~fields) | (uint32_t) T_A | ((uint32_t) hn << 5) |
+              ((uint32_t) ha << 10) | ((uint32_t) hm << 16);
+        put(e, out);
+        e->locked = 0;
+        int rd = x & 31;
+        if (rd != 31) {
+            int hd = hreg(e, rd);
+            put(e, 0xAA0003E0u | ((uint32_t) T_A << 16) | (uint32_t) hd);
+            writeback(e, rd);
+        }
+        return !e->fail;
     } else if ((x & 0x0A000000u) == 0x08000000u) {         // loads and stores
         if ((x & 0x3F000000u) == 0x08000000u) return false;   // exclusives / atomics
         *has_mem = true;
