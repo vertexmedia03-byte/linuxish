@@ -63,6 +63,7 @@ jobs:
               entitlements = plistlib.load(file)
           entitlements["com.apple.security.application-groups"] = [app_group]
           entitlements["com.apple.security.cs.allow-jit"] = True
+          entitlements["get-task-allow"] = True
           with open(destination, "wb") as file:
               plistlib.dump(entitlements, file, fmt=plistlib.FMT_XML)
           PY
@@ -83,6 +84,7 @@ jobs:
           ldid -S"$RUNNER_TEMP/iSH.entitlements" "$APP_PATH/$APP_EXECUTABLE"
           ldid -e "$APP_PATH/$APP_EXECUTABLE" | grep -Fq "$APP_GROUP_ID"
           ldid -e "$APP_PATH/$APP_EXECUTABLE" | grep -Fq "com.apple.security.cs.allow-jit"
+          ldid -e "$APP_PATH/$APP_EXECUTABLE" | grep -Fq "get-task-allow"
           ldid -e "$EXTENSION_PATH/$EXTENSION_EXECUTABLE" | grep -Fq "$APP_GROUP_ID"
 
           ditto -c -k --sequesterRsrc --keepParent "$IPA_ROOT/Payload" "$RUNNER_TEMP/iSH-ARM64.ipa"
