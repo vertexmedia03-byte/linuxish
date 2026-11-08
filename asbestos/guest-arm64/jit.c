@@ -1041,6 +1041,10 @@ static bool emit_insn(struct em *e, uint32_t x, uint64_t pc, unsigned spos, bool
         put(e, x);
         return true;
     }
+    if ((x & 0xFFFFFFE0u) == 0xD50B7E20u ||
+        (x & 0xFFFFFFE0u) == 0xD50B7B20u ||
+        (x & 0xFFFFFFE0u) == 0xD50B7A20u)                 // DC CIVAC / CVAU / CVAC: no guest cache
+        return true;
     if ((x & 0x0E000000u) == 0x0E000000u && (x & 0x1F000000u) != 0x1F000000u && simd_on) {   // SIMD data processing
         if (emit_simd(e, x)) return !e->fail;
     }
@@ -1054,11 +1058,89 @@ static bool emit_insn(struct em *e, uint32_t x, uint64_t pc, unsigned spos, bool
         writeback(e, rd);
         return true;
     }
-    if ((x & 0xFFFFFFE0u) == 0xD53B00E0u) {   // mrs Xt, DCZID_EL0
+    uint32_t sysreg = x & 0xFFFFFFE0u;
+    if (sysreg == 0xD51B4220u) // MSR DAIF: ignored by the existing gadget
+        return true;
+    if (sysreg == 0xD53B4200u) { // MRS Xt, NZCV
         int rt = x & 31;
         if (rt != 31) {
             int h = hreg(e, rt);
-            mov_imm64(e, h, 0x14);   // Match gadget_mrs_sysreg: DZP=1, BS=4
+            if (e->hflags)
+                put(e, 0xD53B4200u | (uint32_t) h);
+            else
+                put(e, 0xB9400000u | ((offsetof(struct cpu_state, nzcv) / 4) << 10) | (1u << 5) | (uint32_t) h);
+            writeback(e, rt);
+        }
+        return true;
+    }
+    if (sysreg == 0xD51B4200u) { // MSR NZCV, Xt
+        int rt = x & 31;
+        int h = rt == 31 ? 31 : hreg(e, rt);
+        put(e, 0xB9000000u | ((offsetof(struct cpu_state, nzcv) / 4) << 10) | (1u << 5) | (uint32_t) h);
+        e->hflags = false;
+        return true;
+    }
+    if (sysreg == 0xD51B4400u || sysreg == 0xD51B4420u) { // MSR FPCR / FPSR
+        unsigned offset = sysreg == 0xD51B4400u
+            ? offsetof(struct cpu_state, fpcr) : offsetof(struct cpu_state, fpsr);
+        int rt = x & 31;
+        int h = rt == 31 ? 31 : hreg(e, rt);
+        put(e, 0xB9000000u | ((offset / 4) << 10) | (1u << 5) | (uint32_t) h);
+        return true;
+    }
+    if (sysreg == 0xD53B2400u || sysreg == 0xD53B2420u) { // RNDR / RNDRRS
+        int rt = x & 31;
+        if (rt != 31) {
+            int h = hreg(e, rt);
+            put(e, 0xD2800000u | (uint32_t) h); // movz xh, #0
+            writeback(e, rt);
+        }
+        put(e, 0x52A80000u | T_P); // movz w8, #0x4000, lsl #16
+        put(e, 0xB9000000u | ((offsetof(struct cpu_state, nzcv) / 4) << 10) | (1u << 5) | T_P);
+        e->hflags = false;
+        return true;
+    }
+    uint64_t sysreg_value = 0;
+    bool sysreg_constant = true;
+    switch (sysreg) {
+    case 0xD53B0020u: sysreg_value = 0x84448004u; break; // CTR_EL0
+    case 0xD53B00E0u: sysreg_value = 0x14u; break;       // DCZID_EL0
+    case 0xD5380400u: sysreg_value = 0x11u; break;       // ID_AA64PFR0_EL1
+    case 0xD5380420u:                               // ID_AA64PFR1_EL1
+    case 0xD5380480u:                               // ID_AA64ZFR0_EL1
+    case 0xD5380600u:                               // ID_AA64ISAR0_EL1
+    case 0xD5380620u: sysreg_value = 0; break;      // ID_AA64ISAR1_EL1
+    case 0xD53B4400u:                               // FPCR
+    case 0xD53B4420u: {                             // FPSR
+        unsigned offset = sysreg == 0xD53B4400u
+            ? offsetof(struct cpu_state, fpcr) : offsetof(struct cpu_state, fpsr);
+        int rt = x & 31;
+        if (rt != 31) {
+            int h = hreg(e, rt);
+            put(e, 0xB9400000u | ((offset / 4) << 10) | (1u << 5) | (uint32_t) h);
+            writeback(e, rt);
+        }
+        return true;
+    }
+    case 0xD53BE040u:                               // CNTVCT_EL0
+    case 0xD53BE000u: {                             // CNTFRQ_EL0
+        int rt = x & 31;
+        if (rt != 31) {
+            int h = hreg(e, rt);
+            put(e, (x & ~31u) | (uint32_t) h);
+            writeback(e, rt);
+        }
+        return true;
+    }
+    default:
+        sysreg_constant = false;
+        break;
+    }
+    if (sysreg_constant) {
+        int rt = x & 31;
+        if (rt != 31) {
+            int h = hreg(e, rt);
+            mov_imm64(e, h, sysreg_value);
             writeback(e, rt);
         }
         return true;
