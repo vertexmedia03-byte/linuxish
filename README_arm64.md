@@ -22,9 +22,9 @@ CLI tools** directly on iPhone and iPad.
 > of pointers to pre-compiled native "gadget" functions that tail-call one another (the
 > technique Forth interpreters use). This fork adds an optional native ARM64 JIT that
 > translates supported guest instructions at runtime; it is enabled in the iOS ARM64 build
-> and requires a jailbroken/JIT-enabled environment. Unsupported blocks use the gadget
-> interpreter by default; optional strict mode aborts instead. Gadget helpers remain necessary
-> for Linux system calls and slow paths.
+> and requires a jailbroken/JIT-enabled environment. The iOS app uses strict mode and aborts
+> when a guest block cannot be fully compiled, rather than interpreting that block.
+> Gadget helpers remain necessary for Linux system calls and slow paths.
 >
 > What this fork adds is an **ARM64 guest backend** inside that same Asbestos infrastructure:
 > new gadgets (`asbestos/guest-arm64/gadgets-aarch64/`) that map AArch64 guest instructions

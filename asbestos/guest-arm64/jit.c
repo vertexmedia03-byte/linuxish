@@ -46,6 +46,19 @@ static bool aot_only;     // ISH_JIT_AOT_ONLY=1: install AOT translations, trans
 static void jit_strict_failure(const char *reason, uint64_t pc, uint32_t insn) {
     fprintf(stderr, "❌ JIT strict mode: %s (guest pc=0x%llx, insn=0x%08x)\n",
             reason, (unsigned long long) pc, insn);
+    const char *home = getenv("HOME");
+    if (home) {
+        char path[1024];
+        int n = snprintf(path, sizeof(path), "%s/Documents/ISH-JIT-STRICT-FAILURE.txt", home);
+        if (n > 0 && (size_t) n < sizeof(path)) {
+            FILE *f = fopen(path, "w");
+            if (f) {
+                fprintf(f, "JIT strict mode: %s\nguest pc: 0x%llx\ninstruction: 0x%08x\n",
+                        reason, (unsigned long long) pc, insn);
+                fclose(f);
+            }
+        }
+    }
     abort();
 }
 #endif

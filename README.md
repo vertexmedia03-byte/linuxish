@@ -13,10 +13,10 @@
 > adds an optional native ARM64 guest JIT that translates supported guest instructions into
 > host code. Runtime JIT emission is
 > enabled in the ARM64 build; on iOS it requires a jailbroken/JIT-enabled environment.
-> Unsupported blocks fall back to the existing gadget interpreter by default. Optional strict
-> mode aborts instead; full-coverage AOT images are accepted, while partial images are skipped
-> and the runtime JIT attempts compilation instead. The JIT does not remove gadget helpers
-> needed for Linux system calls and slow paths.
+> Strict mode aborts instead of interpreting guest blocks that the translator cannot fully
+> compile. Full-coverage AOT images are accepted; partial images are skipped and the runtime JIT
+> attempts compilation instead. It does not remove gadget helpers needed for Linux system calls
+> and slow paths.
 >
 > **Key enhancements over upstream:**
 > - **Native ARM64 gadget dispatch** — same-architecture, 2-12x faster than x86 for compute
@@ -83,9 +83,9 @@ Open the project in Xcode, open `app/iSH.xcconfig`, and change `ROOT_BUNDLE_IDEN
 
 ## Build an iSH ARM64 IPA with GitHub Actions
 
-The **Build iSH ARM64 IPA for TrollStore** workflow builds the `iSH-ARM64` scheme with runtime JIT emission enabled and strict untranslated-block checks disabled, then pseudo-signs the app and File Provider executable with `ldid` and their entitlements, including the TrollStore JIT/debug entitlements. Xcode's iOS device SDK does not permit ad-hoc signing during the build; the post-build signature lets iSH read its app-group entitlement at launch. The workflow packages `iSH ARM64.app` as an IPA and uploads the `iSH-ARM64-trollstore-ipa` artifact. It runs on pushes and pull requests to `main`, or can be started manually from the Actions tab.
+The **Build iSH ARM64 IPA for TrollStore** workflow builds the `iSH-ARM64` scheme with runtime JIT emission and strict untranslated-block checks enabled, then pseudo-signs the app and File Provider executable with `ldid` and their entitlements, including the TrollStore JIT/debug entitlements. Xcode's iOS device SDK does not permit ad-hoc signing during the build; the post-build signature lets iSH read its app-group entitlement at launch. The workflow packages `iSH ARM64.app` as an IPA and uploads the `iSH-ARM64-trollstore-ipa` artifact. It runs on pushes and pull requests to `main`, or can be started manually from the Actions tab.
 
-Download the artifact from a completed workflow run and install it in TrollStore. Use TrollStore's **Open with JIT** action to enable JIT for the app. If JIT is unavailable or a guest instruction is not supported, the default non-strict mode falls back to gadgets instead of aborting; strict mode can be enabled explicitly for fully covered workloads. Complete AOT images can avoid runtime translation for matching blocks, but the workflow does not bundle AOT images by default. Gadgets remain for Linux system calls and slow paths. The pseudo-signed IPA is not suitable for App Store or ordinary device installation.
+Download the artifact from a completed workflow run and install it in TrollStore. Use TrollStore's **Open with JIT** action to enable JIT for the app. Strict mode aborts if setup or guest translation fails; on failure it writes the reason, guest PC, and instruction word to `Documents/ISH-JIT-STRICT-FAILURE.txt` so the failure can be diagnosed. Complete AOT images can avoid runtime translation for matching blocks, but the workflow does not bundle AOT images by default. Gadgets remain for Linux system calls and slow paths. The pseudo-signed IPA is not suitable for App Store or ordinary device installation.
 
 This repository contains the [OpenMinis/ish-arm64](https://github.com/OpenMinis/ish-arm64) source at commit `c5c264da19148512167aa493d7bd4e50aae1b74e`, with its iOS build submodules pinned to the revisions in that source commit. The optional Linux-kernel submodule is omitted because this workflow builds the ARM64 app with iSH's built-in kernel. See [LICENSE.md](LICENSE.md) and [LICENSE.IOS](LICENSE.IOS) for the applicable terms.
 
