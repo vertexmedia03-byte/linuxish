@@ -8,6 +8,12 @@ This is a minimal UIKit iPad app. The screen is implemented in Objective-C++, an
 2. Select the **HelloWorld** scheme and an iPad simulator to run it without signing, or select a connected iPad and configure signing in the target's **Signing & Capabilities** settings.
 3. To create a signed IPA, select **Any iOS Device (arm64)** and choose **Product > Archive**. In the Organizer, choose **Distribute App** and follow the signing/export prompts.
 
+## Build an unsigned IPA with GitHub Actions
+
+The **Build unsigned iOS IPA** workflow builds the app without code signing, packages it as `HelloWorld.ipa`, and uploads it as the `HelloWorld-unsigned-ipa` artifact. It runs on pushes and pull requests to `main`, or can be started manually from the Actions tab with **Run workflow**.
+
+Download the artifact from the completed workflow run. The IPA is unsigned and intended for installation with TrollStore on a compatible device and iOS version; it is not suitable for App Store or ordinary device installation.
+
 For command-line archive and export, replace `YOUR_TEAM_ID` in `ExportOptions.plist` with your Apple Developer team ID, then replace `TEAM_ID` below with the same value:
 
 ```sh
