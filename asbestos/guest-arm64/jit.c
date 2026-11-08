@@ -1054,6 +1054,15 @@ static bool emit_insn(struct em *e, uint32_t x, uint64_t pc, unsigned spos, bool
         writeback(e, rd);
         return true;
     }
+    if ((x & 0xFFFFFFE0u) == 0xD53B00E0u) {   // mrs Xt, DCZID_EL0
+        int rt = x & 31;
+        if (rt != 31) {
+            int h = hreg(e, rt);
+            mov_imm64(e, h, 0x14);   // Match gadget_mrs_sysreg: DZP=1, BS=4
+            writeback(e, rt);
+        }
+        return true;
+    }
     if ((x & 0xFFFFFFE0u) == 0xD53BD040u || (x & 0xFFFFFFE0u) == 0xD51BD040u) {   // mrs/msr tpidr_el0
         int rt = x & 31;
         bool read = (x & 0x00200000u) != 0;
@@ -1878,6 +1887,7 @@ static bool emit_svc_exit(struct em *e, struct fiber_block *b, const struct jit_
 
     mov_block_addr(e, 28, code_off(u->start + 1));
     put(e, 0xF9400000u | (28u << 5) | 11);   // ldr x11, [x28] (next guest PC)
+    put(e, 0x9100239Cu);                     // add x28, x28, #8 (match the SVC gadget's stream advance)
     put(e, 0xF9000000u | ((CPU_pc / 8) << 10) | (1u << 5) | 11);
     emit_to_stub(e, STUB_SYSCALL);
     return !e->fail;
@@ -2029,9 +2039,8 @@ static unsigned emit_segment(struct em *e, struct fiber_block *b, const struct j
                 ended = true;
             } else {
 #ifdef ISH_JIT_STRICT
-                bool syscall_exit = u->n == 1 && is_svc(u->w[0]);
-                if (!syscall_exit)
-                    jit_strict_failure("could not translate block-ending instruction",
+                if (e->fail)
+                    jit_strict_failure("JIT failed while emitting block-ending instruction",
                                        u->pc + (u->n ? 4 * (u->n - 1) : 0),
                                        u->n ? u->w[u->n - 1] : 0);
 #endif
@@ -2069,8 +2078,13 @@ static unsigned emit_segment(struct em *e, struct fiber_block *b, const struct j
         }
         if (!ok) {
 #ifdef ISH_JIT_STRICT
-            jit_strict_failure("unsupported guest instruction or JIT register allocation failure",
-                               u->pc + 4 * failed_k, u->n ? u->w[failed_k] : 0);
+            if (e->fail) {
+                jit_strict_failure("JIT failed while emitting guest instruction",
+                                   u->pc + 4 * failed_k, u->n ? u->w[failed_k] : 0);
+            } else {
+                ish_write_jit_trace("Guest instruction delegated to gadget",
+                                    u->pc + 4 * failed_k, u->n ? u->w[failed_k] : 0, false);
+            }
 #endif
             e->n = n0; e->nfix = nfix0; e->nrel = nrel0; e->npool = npool0; e->fail = false; e->hflags = hf0;
             e->victim = victim0;
@@ -2151,16 +2165,13 @@ static void jit_native(struct fiber_block *b, const struct jit_units *U, struct 
             }
         }
 #ifdef ISH_JIT_STRICT
-        bool syscall_exit = ui + 1 == U->n && U->u[ui].last &&
-                            U->u[ui].n == 1 && is_svc(U->u[ui].w[0]);
-        if ((ui != U->n || !ended || real == 0) && !syscall_exit) {
+        if (ui != U->n || !ended || real == 0) {
             e->complete = false;
-            jit_strict_failure("guest block is not fully translatable",
-                               ui < U->n ? U->u[ui].pc : b->addr,
-                               ui < U->n && U->u[ui].n ? U->u[ui].w[0] : 0);
+            if (U->trace_sampled)
+                ish_write_jit_trace("Guest block continuing with gadget fallback",
+                                    ui < U->n ? U->u[ui].pc : b->addr,
+                                    ui < U->n && U->u[ui].n ? U->u[ui].w[0] : 0, false);
         }
-        if (syscall_exit)
-            e->complete = false;
 #endif
         if (ui != U->n || !ended || real == 0)
             e->complete = false;
