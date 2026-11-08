@@ -32,15 +32,24 @@ endif
 # Native JIT for the ARM64 guest (asbestos/guest-arm64/jit.h). Off by default;
 # without it the build is the plain gadget engine.
 ish_jit = get_option('jit')
+if get_option('jit_strict') and not ish_jit
+    error('-Djit_strict=true requires -Djit=true')
+endif
 if ish_jit
     if guest_arch != 'arm64' or host_machine.system() != 'darwin' or host_machine.cpu_family() != 'aarch64'
         error('-Djit=true needs guest_arch=arm64 on an Apple arm64 host')
     endif
+    if get_option('jit_strict') and not get_option('jit_emit')
+        error('-Djit_strict=true requires -Djit_emit=true')
+    endif
     add_project_arguments('-DISH_JIT=1', language: 'c')
     if not get_option('jit_emit')
         # Run only AOT images a target links in (asbestos/guest-arm64/aot.h);
-        # never map executable memory (iOS release builds).
+        # never map executable memory.
         add_project_arguments('-DISH_JIT_NO_EMIT=1', language: 'c')
+    endif
+    if get_option('jit_strict')
+        add_project_arguments('-DISH_JIT_STRICT=1', language: 'c')
     endif
 endif
 

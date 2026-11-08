@@ -8,15 +8,19 @@
 > It emulates AArch64 Linux on Apple Silicon, running alongside the original x86 (i386)
 > guest backend.
 >
-> Asbestos is **not a JIT** — it doesn't emit machine code at runtime. For each basic block
-> it builds an array of pointers to pre-compiled native "gadget" functions that tail-call
-> each other (the threaded-code technique Forth interpreters use). This fork's contribution
-> is the **ARM64 guest backend** inside that framework: new hand-written ARM64 gadgets that
-> map each AArch64 guest instruction to just a handful of host instructions — same-architecture
-> dispatch, so the overhead per guest instruction is small.
+> Upstream Asbestos is a threaded-code interpreter, not a JIT: each basic block is an array
+> of pointers to pre-compiled native "gadget" functions that tail-call each other. This fork
+> adds an optional native ARM64 guest JIT that translates supported guest instructions into
+> host code. Runtime JIT emission is
+> enabled in the ARM64 build; on iOS it requires a jailbroken/JIT-enabled environment.
+> Strict mode aborts instead of interpreting guest blocks that the translator cannot fully
+> compile. Full-coverage AOT images are accepted; partial images are skipped and the runtime JIT
+> attempts compilation instead. It does not remove gadget helpers needed for Linux system calls
+> and slow paths.
 >
 > **Key enhancements over upstream:**
 > - **Native ARM64 gadget dispatch** — same-architecture, 2-12x faster than x86 for compute
+> - **Optional native ARM64 JIT** — translates supported guest blocks at runtime on JIT-enabled devices
 > - **48-bit virtual address space** — 4-level page table supports V8/Go/Rust runtimes
 > - **Node.js 22 / npm / npx** — V8 guard pages, binary patch, `--jitless` injection
 > - **Go and Rust** — large VA reservations, signal frame alignment, FUTEX_WAIT_BITSET, PMULL
@@ -79,9 +83,9 @@ Open the project in Xcode, open `app/iSH.xcconfig`, and change `ROOT_BUNDLE_IDEN
 
 ## Build an iSH ARM64 IPA with GitHub Actions
 
-The **Build iSH ARM64 IPA for TrollStore** workflow builds the `iSH-ARM64` scheme with its required submodules and native build dependencies, then pseudo-signs the app and File Provider executable with `ldid` and their app-group entitlements. Xcode's iOS device SDK does not permit ad-hoc signing during the build; the post-build signature lets iSH read its app-group entitlement at launch. The workflow packages `iSH ARM64.app` as an IPA and uploads the `iSH-ARM64-trollstore-ipa` artifact. It runs on pushes and pull requests to `main`, or can be started manually from the Actions tab.
+The **Build iSH ARM64 IPA for TrollStore** workflow builds the `iSH-ARM64` scheme with runtime JIT emission and strict untranslated-block checks enabled, then pseudo-signs the app and File Provider executable with `ldid` and their app-group entitlements. Xcode's iOS device SDK does not permit ad-hoc signing during the build; the post-build signature lets iSH read its app-group entitlement at launch. The workflow packages `iSH ARM64.app` as an IPA and uploads the `iSH-ARM64-trollstore-ipa` artifact. It runs on pushes and pull requests to `main`, or can be started manually from the Actions tab.
 
-Download the artifact from a completed workflow run and install it with TrollStore on a compatible device and iOS version. This pseudo-signed IPA is not suitable for App Store or ordinary device installation.
+Download the artifact from a completed workflow run and install it in a jailbroken/JIT-enabled environment. Strict mode aborts when a guest block cannot be fully compiled; it may therefore fail on real Linux workloads. Complete AOT images can avoid runtime translation for matching blocks, but the workflow does not bundle AOT images by default. Gadgets remain for Linux system calls and slow paths. The pseudo-signed IPA is not suitable for App Store or ordinary device installation.
 
 This repository contains the [OpenMinis/ish-arm64](https://github.com/OpenMinis/ish-arm64) source at commit `c5c264da19148512167aa493d7bd4e50aae1b74e`, with its iOS build submodules pinned to the revisions in that source commit. The optional Linux-kernel submodule is omitted because this workflow builds the ARM64 app with iSH's built-in kernel. See [LICENSE.md](LICENSE.md) and [LICENSE.IOS](LICENSE.IOS) for the applicable terms.
 

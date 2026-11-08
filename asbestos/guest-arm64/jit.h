@@ -5,9 +5,10 @@
 //
 // A layer on top of the threaded-code blocks: after a block's gadget stream is
 // generated, runs of supported guest instructions are translated to host code
-// in a MAP_JIT region and the first gadget pointer of each run is replaced by
-// a pointer to that code. Anything else still runs as gadgets, so block
-// chaining, ret_cache and the fallback paths are those of the gadget engine.
+// in an executable region (MAP_JIT on macOS, dual mapping on iOS), and the
+// first gadget pointer of each run is replaced by a pointer to that code.
+// Anything else still runs as gadgets, so block chaining, ret_cache and the
+// fallback paths are those of the gadget engine.
 //
 // - The hottest guest registers live in fixed host registers across native
 //   code and are stored back whenever control leaves it.
@@ -16,7 +17,7 @@
 //   successors are reached through patched direct branches.
 //
 // Without ISH_JIT none of this is compiled and every hook below is absent, so
-// the default build is the plain gadget engine. With it, ISH_JIT=0 in the
+// the build is the plain gadget engine. With it, ISH_JIT=0 in the
 // environment turns the translator off at run time (the BLR code stream keeps
 // its JIT layout). Tuning / diagnostics: ISH_JIT_PIN=0, ISH_JIT_LINK=0,
 // ISH_JIT_LOOP=0, ISH_JIT_SIMD=0, ISH_JIT_STATS=1, ISH_JIT_DUMP=<file>,
@@ -52,6 +53,7 @@ struct jit_unit {
 
 struct jit_units {
     unsigned n;            // > JIT_MAX_UNITS: overflowed, block is not translated
+    uint64_t start_ticks;  // start of this block's decode/generation interval
     struct jit_unit u[JIT_MAX_UNITS];
 };
 
@@ -106,7 +108,8 @@ void jit_module_path(int mod, char *buf, size_t size);
 // Host fault in native code: sync pinned guest registers into cpu_state.
 bool jit_crash_sync(void *ucontext);
 
-// Guest init is exiting: ISH_JIT_STATS=1 prints counters, ISH_JIT_DUMP=<file>
+// Guest init is exiting: ISH_JIT_STATS=1 prints counters, including cumulative
+// block decode/generation and translation/lookup time. ISH_JIT_DUMP=<file>
 // writes the code region.
 void jit_report(void);
 

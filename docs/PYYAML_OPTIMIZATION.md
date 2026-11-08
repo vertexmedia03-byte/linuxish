@@ -409,12 +409,14 @@ gret (ldr+br)                          // 派发             (2 条)
      同步（与前述寄存器提升同类问题，但因收益 7× 而非 1.5×，值得投入）。
   这是 QEMU TCG / V8 baseline 级别的工作量，但收益（纯计算 7×、混合负载显著）远超前三条路。
 
-### ⚠️ 关键约束更正：iOS 上架 app 禁 MAP_JIT → 运行时 JIT 不可行
+### ⚠️ 关键约束更正：App Store iOS app 禁 MAP_JIT → 标准分发不可用运行时 JIT
 - App Store 普通 app **不允许 MAP_JIT / RWX 内存**（仅 `com.apple.security.cs.allow-jit`
-  特权 entitlement，给浏览器，普通 app 拿不到）。这正是 **iSH 本身选 threaded-code 而非
+  特权 entitlement，给浏览器，普通 app 拿不到）。这正是 **上游 iSH 选择 threaded-code 而非
   真 JIT 的根本原因**——块是 gadget 指针数组（纯数据），不发射 host 机器码，才能合规上架。
 - **所以上面 basic-block JIT 的“通用引擎形态”（运行时发射 host 码 + RWX 缓冲）在 iOS
   上架 app 里不可行。** 之前列的落地路线 (1) RWX 代码缓冲这一步是违规的，作废。
+- 本 fork 现包含 ARM64 runtime JIT：iOS 路径使用双重映射，并且仅面向越狱/JIT 环境；
+  这不改变标准 iOS 分发应使用 AOT 的结论。
 - **但 PoC 的 7× 收益并不依赖运行时 RWX**：PoC 用的是 **AOT 编译进 iSH 二进制的 native
   spec_fn**（`spec_bbjit_poc.c` 编译期即 host 机器码，在合法 `__TEXT` 段）。host 机器码是
   **编译时**产生的，运行时零 RWX、纯查表跳转 → **完全合规**。

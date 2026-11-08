@@ -56,11 +56,20 @@ images/
 `<name>` and what each image covers are in `images.json` (module substring, recording
 workload, packages).
 
+Recordings and generated images mark whether a translation covers the entire guest block.
+Strict JIT builds use complete images directly, skip partial images and compile those blocks at
+run time, then abort only if the dynamic translator cannot cover a block. Older images without
+the marker are not trusted as complete by strict builds.
+
 An image only loads into an ish with the same abi (`jit_abi()`: `JIT_CODE_VERSION` in
 `asbestos/guest-arm64/jit.c`, the gadget conventions, the struct layouts). Any other ish lists it as
 `rejected` in `/proc/ish/jit`. After a change to `jit.c`, `gen.c`, the gadgets or the offsets, record
 again into a new `<abi>/` directory. Within one abi, an image serves its exact module (build-id) and,
 through family matching, other versions of it (`libz.so.1*`, …).
+
+JIT_CODE_VERSION is now 11. The current images under older ABI directories predate the full-block
+coverage marker and won't be accepted by strict mode; regenerate them with the current recorder and
+`gen.py`.
 
 **Table layout.** Since abi `97963b7f` the tables use the compact layout of
 `asbestos/guest-arm64/aot.h`: 32-bit self-relative pointers (the linker resolves them, dyld has
@@ -233,9 +242,17 @@ meson setup build-arm64-aot -Dguest_arch=arm64 -Djit=true -Djit_emit=false -Dbui
 ninja -C build-arm64-aot
 ```
 
-App / IPA: the ARM64 targets build the AOT runtime by default (`ISH_ENABLE_JIT = YES`,
-`ISH_JIT_EMIT = NO` in `app/GuestARM64.xcconfig`). List the images in `app/AOTImages.local.xcconfig`
-(not committed, included by `app/AppARM64.xcconfig`) and a plain build of the scheme links them:
+App / IPA: the ARM64 targets enable runtime JIT emission by default (`ISH_ENABLE_JIT = YES`,
+`ISH_JIT_EMIT = YES`, `ISH_JIT_STRICT = YES` in `app/GuestARM64.xcconfig`). Full-coverage AOT
+images avoid runtime instruction translation for matching blocks; guest block decoding and image
+matching still happen. Exact-image hits compare decoded units directly, avoiding construction and
+hashing of the full runtime translation key. The JIT reuses its key hash for family-image search
+and the runtime translation cache, and no longer rereads the first guest instruction from the TLB
+after decoding it. Partial images fall through to dynamic translation, which strict mode checks
+for complete coverage. These changes reduce duplicate work but do not bypass the guest decoder.
+For AOT-only execution, set
+`ISH_JIT_EMIT = NO`; list the images in `app/AOTImages.local.xcconfig` (not committed, included by
+`app/AppARM64.xcconfig`) and a plain build of the scheme links them:
 
 ```sh
 { printf 'ISH_AOT_OBJECTS ='; for f in benchmark/aojit/images/$ABI/latest/ios/aot_*_ios.o; do printf ' $(SRCROOT)/%s' $f; done; echo; } > app/AOTImages.local.xcconfig
@@ -245,6 +262,10 @@ xcodebuild -project iSH.xcodeproj -scheme iSH-ARM64 -configuration Release \
 xcodebuild -exportArchive -archivePath build-ipa/iSH-ARM64.xcarchive -exportPath build-ipa/export \
     -exportOptionsPlist build-ipa/ExportOptions.plist -allowProvisioningUpdates
 ```
+
+`/proc/ish/jit` reports cumulative guest block decode/generation time separately from translation
+and lookup time. Compare those counters and workload wall time with AOT on/off to determine whether
+translation is a meaningful bottleneck before investing in decoder changes.
 
 ### 5. Check
 

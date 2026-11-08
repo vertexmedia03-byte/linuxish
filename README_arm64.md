@@ -18,16 +18,19 @@ CLI tools** directly on iPhone and iPad.
 
 > **Naming note**: *Asbestos* is the upstream project's name for its threaded-code
 > interpreter (see the upstream commit [`d375656f` "Rename the JIT"](https://github.com/ish-app/ish/commit/d375656f)
-> from June 2024). It is **not a JIT** — neither Asbestos nor its predecessor emits machine
-> code at runtime. For each basic block it builds an array of pointers to pre-compiled
-> native "gadget" functions that tail-call one another (the technique Forth interpreters use).
+> from June 2024). The upstream engine itself is **not a JIT**: each basic block is an array
+> of pointers to pre-compiled native "gadget" functions that tail-call one another (the
+> technique Forth interpreters use). This fork adds an optional native ARM64 JIT that
+> translates supported guest instructions at runtime; it is enabled in the iOS ARM64 build
+> and requires a jailbroken/JIT-enabled environment. The iOS app uses strict mode and aborts
+> when a guest block cannot be fully compiled, rather than interpreting that block.
+> Gadget helpers remain necessary for Linux system calls and slow paths.
 >
 > What this fork adds is an **ARM64 guest backend** inside that same Asbestos infrastructure:
 > new gadgets (`asbestos/guest-arm64/gadgets-aarch64/`) that map AArch64 guest instructions
 > to a few ARM64 host instructions each — same-architecture dispatch, so each guest
 > instruction costs only a handful of host instructions. The upstream x86 backend continues
-> to ship unchanged alongside it. Some prose below says "JIT" as convenient shorthand —
-> read it as "same-arch gadget dispatch," not runtime codegen.
+> to ship unchanged alongside it.
 
 ---
 

@@ -21,6 +21,9 @@ struct aot_seg {
     uint32_t words;
 };
 
+#define AOT_TRANS_COMPLETE (1u << 31)
+#define AOT_TRANS_NSEG_MASK (~AOT_TRANS_COMPLETE)
+
 struct aot_loop {                 // self-loop block: promoted registers in [lo, hi)
     const uint32_t *lo, *hi;
     uint8_t n, pad[7];
@@ -37,7 +40,7 @@ struct aot_trans {
     int32_t key;                  // -> compact key (above)
     int32_t gadget;               // -> per unit an int32 (aot_rel) to the gadget at the unit's start, or 0
     int32_t seg;                  // -> struct aot_seg[nseg]
-    uint32_t nseg, nunits;
+    uint32_t nseg, nunits;        // nseg's high bit marks full guest-block coverage
     int32_t link[2];              // -> direct-link branch per jump_ip slot, or 0
     int32_t loop;                 // -> struct aot_loop, or 0
 };

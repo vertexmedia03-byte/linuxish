@@ -369,7 +369,9 @@ def main():
         lines.append(f'    .quad {t["off"]}')
         lines.append(f'    .long {t["idx"]}, {len(t["key"])}')
         lines.append(f'    .quad Lk{ti}, Lg{ti}, Ls{ti}')
-        lines.append(f'    .long {len(t["segs"])}, {t["key"][4]}')
+        # Older recordings lack this marker; strict JIT builds won't trust them.
+        nseg = len(t['segs']) | (0x80000000 if t.get('complete', False) else 0)
+        lines.append(f'    .long {nseg}, {t["key"][4]}')
         lines.append(f'    .quad {links[0]}, {links[1]}, {f"Ll{ti}" if t["_loop"] else "0"}')
     digest = sha256_of(mod_file)
     build_id = build_id_of(mod_file)

@@ -69,7 +69,11 @@ jit_emit=true
 if [[ $ISH_JIT_EMIT == NO ]]; then
     jit_emit=false
 fi
-for var in buildtype log b_ndebug b_sanitize log_handler kernel kconfig guest_arch jit jit_emit; do
+jit_strict=false
+if [[ $ISH_JIT_STRICT == YES ]]; then
+    jit_strict=true
+fi
+for var in buildtype log b_ndebug b_sanitize log_handler kernel kconfig guest_arch jit jit_emit jit_strict; do
     old_value=$(python3 -c "import sys, json; v = next(x['value'] for x in json.load(sys.stdin) if x['name'] == '$var'); print(str(v).lower() if isinstance(v, bool) else ','.join(v) if isinstance(v, list) else v)" <<< $config)
     new_value=${!var}
     if [[ $old_value != $new_value ]]; then

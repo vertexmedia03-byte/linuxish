@@ -3,7 +3,7 @@
 **Fork 自 [ish-app/ish](https://github.com/ish-app/ish)** — iOS 上的用户态 Linux 模拟器。
 
 本 fork 在上游 iSH 的 threaded-code 解释器（**Asbestos**，2024 年之前叫 *jit*，上游重命名是因为
-它本来就不是真正的 JIT）之上**新增了 ARM64 guest 后端**，在 Apple Silicon 上模拟 AArch64 Linux，
+它本来就不是真正的 JIT）之上**新增了 ARM64 guest 后端和可选的原生 ARM64 JIT**，在 Apple Silicon 上模拟 AArch64 Linux，
 与原版 x86 (i386) guest 后端并存。结果是一个性能和兼容性大幅提升的 Linux 环境，
 能在 iPhone / iPad 上直接运行 **Python、Node.js、Go、Rust 和原生 CLI 工具**。
 
@@ -15,13 +15,13 @@
 
 > **命名说明**：*Asbestos* 是上游项目给自家 threaded-code 解释器起的名字（见上游 commit
 > [`d375656f` "Rename the JIT"](https://github.com/ish-app/ish/commit/d375656f)，2024 年 6 月）。
-> 它**不是 JIT** —— Asbestos 及其前身都不会在运行时生成机器码，而是为每个基本块构造一个
-> 指针数组（指向预编译的原生 gadget 函数），各 gadget 通过尾调用衔接（Forth 解释器采用的技术）。
+> 上游 Asbestos 本身**不是 JIT**：每个基本块是指向预编译原生 gadget 函数的指针数组，
+> gadget 之间通过尾调用衔接（Forth 解释器采用的技术）。本 fork 额外实现了可选的原生 ARM64 JIT，
+> 可在运行时翻译受支持的 guest 指令；iOS ARM64 构建默认启用，需要越狱/JIT 环境。iOS 应用启用严格模式：无法完整编译的 guest 块会中止，而不是解释执行；Linux 系统调用和慢速路径仍需要 gadget 辅助。
 >
-> 本 fork 所做的是在这个 Asbestos 框架里**新增一个 ARM64 guest 后端**：
+> 本 fork 所做的是在这个 Asbestos 框架里**新增 ARM64 guest 后端和可选的原生 JIT**：
 > 新的 gadget（`asbestos/guest-arm64/gadgets-aarch64/`）把 AArch64 guest 指令映射到若干条
 > ARM64 host 指令——同架构分派，每条 guest 指令只需几条 host 指令。上游 x86 后端依然并存。
-> 下文部分地方用 "JIT" 作为简写，请理解为"同架构 gadget 分派"，而非运行时代码生成。
 >
 > 英文版: [README_arm64.md](README_arm64.md)
 
