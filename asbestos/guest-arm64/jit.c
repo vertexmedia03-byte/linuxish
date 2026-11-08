@@ -27,8 +27,10 @@
 #include "emu/cpu.h"
 #include "emu/mmu.h"
 #include "emu/tlb.h"
+#include "fs/fd.h"
 #include "kernel/fs.h"
 #include "kernel/memory.h"
+#include "kernel/task.h"
 #include "cpu-offsets.h"
 
 extern void jit_fiber_ret(void) __asm("fiber_ret");
@@ -47,9 +49,50 @@ static bool aot_only;     // ISH_JIT_AOT_ONLY=1: install AOT translations, trans
                           // (what a build without the JIT would run)
 
 #ifdef ISH_JIT_STRICT
+static void jit_write_guest_failure(const char *reason, uint64_t pc, uint32_t insn) {
+    if (!current || !current->fs) {
+        fprintf(stderr, "JIT strict diagnostic: no guest filesystem is active\n");
+        return;
+    }
+    struct fd *fd = generic_open("/root/ISH-JIT-STRICT-FAILURE.txt",
+                                 O_WRONLY_ | O_CREAT_ | O_TRUNC_, 0644);
+    if (IS_ERR(fd)) {
+        fprintf(stderr, "JIT strict diagnostic: cannot open guest /root report (error=%ld)\n",
+                (long) PTR_ERR(fd));
+        return;
+    }
+    char report[512];
+    int len = snprintf(report, sizeof(report),
+                       "JIT strict mode: %s\nguest pc: 0x%llx\ninstruction: 0x%08x\n",
+                       reason, (unsigned long long) pc, insn);
+    if (len <= 0 || (size_t) len >= sizeof(report)) {
+        fprintf(stderr, "JIT strict diagnostic: could not format guest /root report\n");
+        fd_close(fd);
+        return;
+    }
+    size_t written = 0;
+    while (written < (size_t) len) {
+        ssize_t n = fd->ops->write(fd, report + written, (size_t) len - written);
+        if (n <= 0)
+            break;
+        written += (size_t) n;
+    }
+    int close_result = fd_close(fd);
+    if (written != (size_t) len) {
+        fprintf(stderr, "JIT strict diagnostic: could not write guest /root report (%zu of %d bytes)\n",
+                written, len);
+    } else if (close_result < 0) {
+        fprintf(stderr, "JIT strict diagnostic: could not close guest /root report (error=%d)\n",
+                close_result);
+    } else {
+        fprintf(stderr, "JIT strict diagnostic saved to guest /root/ISH-JIT-STRICT-FAILURE.txt\n");
+    }
+}
+
 static void jit_strict_failure(const char *reason, uint64_t pc, uint32_t insn) {
     fprintf(stderr, "❌ JIT strict mode: %s (guest pc=0x%llx, insn=0x%08x)\n",
             reason, (unsigned long long) pc, insn);
+    jit_write_guest_failure(reason, pc, insn);
     if (ish_write_jit_strict_failure) {
         ish_write_jit_strict_failure(reason, pc, insn);
     } else {
