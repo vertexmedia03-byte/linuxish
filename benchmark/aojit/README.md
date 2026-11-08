@@ -243,13 +243,13 @@ ninja -C build-arm64-aot
 ```
 
 App / IPA: the ARM64 targets enable runtime JIT emission by default (`ISH_ENABLE_JIT = YES`,
-`ISH_JIT_EMIT = YES`, `ISH_JIT_STRICT = YES` in `app/GuestARM64.xcconfig`). Full-coverage AOT
+`ISH_JIT_EMIT = YES`, `ISH_JIT_STRICT = NO` in `app/GuestARM64.xcconfig`). Full-coverage AOT
 images avoid runtime instruction translation for matching blocks; guest block decoding and image
 matching still happen. Exact-image hits compare decoded units directly, avoiding construction and
 hashing of the full runtime translation key. The JIT reuses its key hash for family-image search
 and the runtime translation cache, and no longer rereads the first guest instruction from the TLB
-after decoding it. Partial images fall through to dynamic translation, which strict mode checks
-for complete coverage. These changes reduce duplicate work but do not bypass the guest decoder.
+after decoding it. Partial images fall through to dynamic translation; strict mode, when enabled,
+checks for complete coverage. These changes reduce duplicate work but do not bypass the guest decoder.
 For AOT-only execution, set
 `ISH_JIT_EMIT = NO`; list the images in `app/AOTImages.local.xcconfig` (not committed, included by
 `app/AppARM64.xcconfig`) and a plain build of the scheme links them:

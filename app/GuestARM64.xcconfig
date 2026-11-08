@@ -21,14 +21,15 @@ MESON_GUEST_OPTION = -Dguest_arch=arm64
 // YES builds libish with the native JIT (meson -Djit=true, see
 // asbestos/guest-arm64/jit.h). Runtime translation needs executable memory;
 // iOS builds require a jailbroken/JIT-enabled environment. If allocation is
-// denied at runtime, execution falls back to gadgets unless strict mode is
-// enabled. Strict mode aborts on untranslated guest blocks; it does not remove
-// gadget helpers used for Linux syscalls and slow paths. Set NO for AOT-only
-// builds that run linked images (aot_<name>.S from tools/jit_aot/gen.py, see
-// asbestos/guest-arm64/aot.h) without mapping executable memory.
+// denied at runtime, execution falls back to gadgets. Strict mode aborts on
+// untranslated guest blocks; enable it only for fully covered workloads. It
+// does not remove gadget helpers used for Linux syscalls and slow paths. Set
+// ISH_ENABLE_JIT = NO for AOT-only builds that run linked images (aot_<name>.S
+// from tools/jit_aot/gen.py, see asbestos/guest-arm64/aot.h) without mapping
+// executable memory.
 ISH_ENABLE_JIT = YES
 ISH_JIT_EMIT = YES
-ISH_JIT_STRICT = YES
+ISH_JIT_STRICT = NO
 
 // ARM64 rootfs URL (Alpine 3.21 aarch64 minirootfs)
 ROOTFS_URL = dl-cdn.alpinelinux.org/alpine/v3.21/releases/aarch64/alpine-minirootfs-3.21.0-aarch64.tar.gz
