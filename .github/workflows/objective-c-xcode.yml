@@ -1,4 +1,4 @@
-name: Build unsigned iSH ARM64 IPA
+name: Build iSH ARM64 IPA for TrollStore
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    name: Build and package iSH ARM64
+    name: Build and package iSH ARM64 for TrollStore
     runs-on: macos-15
     timeout-minutes: 120
 
@@ -35,10 +35,14 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
-            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM= \
             clean build
 
-      - name: Package unsigned IPA
+      - name: Package TrollStore IPA
         run: |
           APP_PATH="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/iSH ARM64.app"
           IPA_ROOT="$RUNNER_TEMP/ipa"
@@ -50,6 +54,6 @@ jobs:
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: iSH-ARM64-unsigned-ipa
+          name: iSH-ARM64-trollstore-ipa
           path: ${{ runner.temp }}/iSH-ARM64.ipa
           if-no-files-found: error
