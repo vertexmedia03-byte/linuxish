@@ -91,7 +91,7 @@
     }
 
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"JIT Report Folder Set"
-                                                                   message:[NSString stringWithFormat:@"Strict JIT failure reports will be saved in %@. Reproduce the crash to create the report.",
+                                                                   message:[NSString stringWithFormat:@"JIT trace and strict-failure reports will be saved in %@. Reproduce the issue, then check ISH-JIT-TRACE.log.",
                                                                             url.lastPathComponent]
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];

@@ -54,6 +54,7 @@ struct jit_unit {
 struct jit_units {
     unsigned n;            // > JIT_MAX_UNITS: overflowed, block is not translated
     uint64_t start_ticks;  // start of this block's decode/generation interval
+    bool trace_sampled;    // whether this block is included in strict JIT diagnostics
     struct jit_unit u[JIT_MAX_UNITS];
 };
 

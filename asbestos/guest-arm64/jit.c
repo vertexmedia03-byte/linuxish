@@ -35,7 +35,10 @@
 
 extern void jit_fiber_ret(void) __asm("fiber_ret");
 extern void jit_fiber_ret_chain(void) __asm("fiber_ret_chain");
+#ifdef ISH_JIT_STRICT
 extern void ish_write_jit_strict_failure(const char *reason, uint64_t pc, uint32_t insn);
+extern void ish_write_jit_trace(const char *event, uint64_t pc, uint64_t detail, bool reset);
+#endif
 
 // ---------------------------------------------------------------- options
 
@@ -90,6 +93,7 @@ static void jit_write_guest_failure(const char *reason, uint64_t pc, uint32_t in
 }
 
 static void jit_strict_failure(const char *reason, uint64_t pc, uint32_t insn) {
+    ish_write_jit_trace(reason, pc, insn, false);
     ish_write_jit_strict_failure(reason, pc, insn);
     jit_write_guest_failure(reason, pc, insn);
     fprintf(stderr, "❌ JIT strict mode: %s (guest pc=0x%llx, insn=0x%08x)\n",
@@ -106,6 +110,9 @@ static bool env_off(const char *name) {
 // ---------------------------------------------------------------- stats
 
 static _Atomic uint64_t st_blocks, st_segments, st_units, st_bytes, st_ticks;
+#ifdef ISH_JIT_STRICT
+static _Atomic uint64_t st_trace_blocks;
+#endif
 static _Atomic uint64_t st_decode_ticks;
 
 // Timings summed over every block: jit_ticks() reads the counter without the
@@ -3673,6 +3680,9 @@ void jit_report(void) {
 static pthread_once_t init_once = PTHREAD_ONCE_INIT;
 
 static void jit_init(void) {
+#ifdef ISH_JIT_STRICT
+    ish_write_jit_trace("JIT initialization started", 0, 0, true);
+#endif
     if (env_off("ISH_JIT")) {
 #ifdef ISH_JIT_STRICT
         jit_strict_failure("ISH_JIT disables the translator", 0, 0);
@@ -3690,6 +3700,8 @@ static void jit_init(void) {
 #ifdef ISH_JIT_STRICT
     if (!have_region)
         jit_strict_failure("no executable code region is available", 0, 0);
+    ish_write_jit_trace(have_region ? "Executable code region available" : "No executable code region",
+                        0, have_images, false);
 #endif
     if (!have_region && !have_images) {
         fprintf(stderr, "⚠️  JIT: no executable code region (%s), running gadgets only\n",
@@ -3724,6 +3736,9 @@ static void jit_init(void) {
     if (aot_only && !aot_nimages)
         return;
     jit_on = true;
+#ifdef ISH_JIT_STRICT
+    ish_write_jit_trace("JIT initialization completed", 0, aot_nimages, false);
+#endif
 }
 
 // Per-thread scratch: the units of the block being compiled and the emitter.
@@ -3767,6 +3782,14 @@ struct jit_units *jit_units_begin(void) {
     }
     s->units.n = 0;
     s->units.start_ticks = jit_ticks();
+#ifdef ISH_JIT_STRICT
+    uint64_t block_number = atomic_fetch_add_explicit(&st_trace_blocks, 1, memory_order_relaxed) + 1;
+    s->units.trace_sampled = block_number <= 32 || block_number % 128 == 0;
+    if (s->units.trace_sampled)
+        ish_write_jit_trace("Guest block decode started", 0, block_number, false);
+#else
+    s->units.trace_sampled = false;
+#endif
     return &s->units;
 }
 
@@ -3802,6 +3825,12 @@ void jit_step_end(struct jit_units *U, const struct jit_step *step,
         u->w[0] = state->last_insn;
     if (u->n > 1)
         tlb_read(tlb, step->ip + 4, &u->w[1], 4);
+#ifdef ISH_JIT_STRICT
+    if (U->trace_sampled &&
+        (U->n == 1 || U->n % 32 == 0 || !more))
+        ish_write_jit_trace(!more ? "Guest block decode completed" : "Guest instruction decoded",
+                            u->pc, u->n ? u->w[0] : 0, false);
+#endif
     if (!more)
         atomic_fetch_add_explicit(&st_decode_ticks, jit_ticks() - U->start_ticks, memory_order_relaxed);
 }
@@ -3822,12 +3851,20 @@ void jit_block(struct fiber_block *b, struct jit_units *U) {
 #endif
         return;
     }
+#ifdef ISH_JIT_STRICT
+    if (U->trace_sampled)
+        ish_write_jit_trace("Guest block translation started", b->addr, U->n, false);
+#endif
     uint64_t t0 = jit_ticks();
     if (cm_on)
         cm_block(b);
     jit_translate(b, U, &scratch->em, scratch->key);
     atomic_fetch_add_explicit(&st_ticks, jit_ticks() - t0, memory_order_relaxed);
     atomic_fetch_add_explicit(&st_blocks, 1, memory_order_relaxed);
+#ifdef ISH_JIT_STRICT
+    if (U->trace_sampled)
+        ish_write_jit_trace("Guest block translation completed", b->addr, U->n, false);
+#endif
 }
 
 // A native segment covering units [first, end) of block b is installed at
