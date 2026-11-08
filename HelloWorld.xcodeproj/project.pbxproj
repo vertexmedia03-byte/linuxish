@@ -92,7 +92,7 @@
 		E20000000000000000000001 /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
-				BuildIndependentTargetsIn parallel = 1;
+				BuildIndependentTargetsInParallel = 1;
 				LastUpgradeCheck = 1600;
 				TargetAttributes = {
 					E10000000000000000000001 = {
