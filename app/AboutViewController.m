@@ -14,6 +14,7 @@
 #import "iOSFS.h"
 #import "UIApplication+OpenURL.h"
 #import "NSObject+SaneKVO.h"
+#import "UIViewController+Extras.h"
 
 @interface AboutViewController () <UIDocumentPickerDelegate>
 @property (weak, nonatomic) IBOutlet UITableViewCell *capsLockMappingCell;
