@@ -33,6 +33,7 @@
 
 extern void jit_fiber_ret(void) __asm("fiber_ret");
 extern void jit_fiber_ret_chain(void) __asm("fiber_ret_chain");
+extern void ish_write_jit_strict_failure(const char *reason, uint64_t pc, uint32_t insn) __attribute__((weak_import));
 
 // ---------------------------------------------------------------- options
 
@@ -49,32 +50,36 @@ static bool aot_only;     // ISH_JIT_AOT_ONLY=1: install AOT translations, trans
 static void jit_strict_failure(const char *reason, uint64_t pc, uint32_t insn) {
     fprintf(stderr, "❌ JIT strict mode: %s (guest pc=0x%llx, insn=0x%08x)\n",
             reason, (unsigned long long) pc, insn);
-    const char *home = getenv("HOME");
-    if (!home || !home[0]) {
-        fprintf(stderr, "JIT strict diagnostic: HOME is not set; report was not saved\n");
+    if (ish_write_jit_strict_failure) {
+        ish_write_jit_strict_failure(reason, pc, insn);
     } else {
-        char documents[1024], path[1200];
-        int n = snprintf(documents, sizeof(documents), "%s/Documents", home);
-        int m = n > 0 && (size_t) n < sizeof(documents)
-            ? snprintf(path, sizeof(path), "%s/ISH-JIT-STRICT-FAILURE.txt", documents) : -1;
-        if (n <= 0 || (size_t) n >= sizeof(documents) || m <= 0 || (size_t) m >= sizeof(path)) {
-            fprintf(stderr, "JIT strict diagnostic: Documents path is too long; report was not saved\n");
-        } else if (mkdir(documents, 0700) != 0 && errno != EEXIST) {
-            fprintf(stderr, "JIT strict diagnostic: cannot create %s (errno=%d)\n", documents, errno);
+        const char *home = getenv("HOME");
+        if (!home || !home[0]) {
+            fprintf(stderr, "JIT strict diagnostic: HOME is not set; report was not saved\n");
         } else {
-            FILE *f = fopen(path, "w");
-            if (!f) {
-                fprintf(stderr, "JIT strict diagnostic: cannot open %s (errno=%d)\n", path, errno);
+            char documents[1024], path[1200];
+            int n = snprintf(documents, sizeof(documents), "%s/Documents", home);
+            int m = n > 0 && (size_t) n < sizeof(documents)
+                ? snprintf(path, sizeof(path), "%s/ISH-JIT-STRICT-FAILURE.txt", documents) : -1;
+            if (n <= 0 || (size_t) n >= sizeof(documents) || m <= 0 || (size_t) m >= sizeof(path)) {
+                fprintf(stderr, "JIT strict diagnostic: Documents path is too long; report was not saved\n");
+            } else if (mkdir(documents, 0700) != 0 && errno != EEXIST) {
+                fprintf(stderr, "JIT strict diagnostic: cannot create %s (errno=%d)\n", documents, errno);
             } else {
-                int written = fprintf(f, "JIT strict mode: %s\nguest pc: 0x%llx\ninstruction: 0x%08x\n",
-                                      reason, (unsigned long long) pc, insn);
-                bool saved = written >= 0 && fflush(f) == 0 && fsync(fileno(f)) == 0;
-                if (fclose(f) != 0)
-                    saved = false;
-                if (!saved)
-                    fprintf(stderr, "JIT strict diagnostic: write failed for %s (errno=%d)\n", path, errno);
-                else
-                    fprintf(stderr, "JIT strict diagnostic saved to %s\n", path);
+                FILE *f = fopen(path, "w");
+                if (!f) {
+                    fprintf(stderr, "JIT strict diagnostic: cannot open %s (errno=%d)\n", path, errno);
+                } else {
+                    int written = fprintf(f, "JIT strict mode: %s\nguest pc: 0x%llx\ninstruction: 0x%08x\n",
+                                          reason, (unsigned long long) pc, insn);
+                    bool saved = written >= 0 && fflush(f) == 0 && fsync(fileno(f)) == 0;
+                    if (fclose(f) != 0)
+                        saved = false;
+                    if (!saved)
+                        fprintf(stderr, "JIT strict diagnostic: write failed for %s (errno=%d)\n", path, errno);
+                    else
+                        fprintf(stderr, "JIT strict diagnostic saved to %s\n", path);
+                }
             }
         }
     }

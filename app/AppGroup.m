@@ -11,6 +11,7 @@
 #import <mach-o/loader.h>
 #import <mach-o/getsect.h>
 #import <dlfcn.h>
+#include <stdint.h>
 
 #define CSMAGIC_EMBEDDED_SIGNATURE 0xfade0cc0
 #define CSMAGIC_EMBEDDED_ENTITLEMENTS 0xfade7171
@@ -104,4 +105,30 @@ NSArray<NSString *> *CurrentAppGroups(void) {
 NSURL *ContainerURL(void) {
     NSString *appGroup = CurrentAppGroups()[0];
     return [NSFileManager.defaultManager containerURLForSecurityApplicationGroupIdentifier:appGroup];
+}
+
+void ish_write_jit_strict_failure(const char *reason, uint64_t pc, uint32_t insn) {
+    NSString *documents = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory
+                                                               inDomains:NSUserDomainMask].firstObject.path;
+    if (documents == nil) {
+        NSLog(@"iSH JIT strict diagnostic: Documents directory is unavailable");
+        return;
+    }
+    NSError *error = nil;
+    if (![NSFileManager.defaultManager createDirectoryAtPath:documents
+                                withIntermediateDirectories:YES
+                                                 attributes:nil
+                                                      error:&error]) {
+        NSLog(@"iSH JIT strict diagnostic: could not create %@: %@", documents, error);
+        return;
+    }
+    NSString *path = [documents stringByAppendingPathComponent:@"ISH-JIT-STRICT-FAILURE.txt"];
+    NSString *report = [NSString stringWithFormat:@"JIT strict mode: %s\nguest pc: 0x%llx\ninstruction: 0x%08x\n",
+                                                  reason, (unsigned long long) pc, insn];
+    error = nil;
+    if (![report writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
+        NSLog(@"iSH JIT strict diagnostic: could not write %@: %@", path, error);
+        return;
+    }
+    NSLog(@"iSH JIT strict diagnostic saved to %@", path);
 }
