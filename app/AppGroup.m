@@ -108,6 +108,7 @@ NSURL *ContainerURL(void) {
 }
 
 void ish_write_jit_strict_failure(const char *reason, uint64_t pc, uint32_t insn) {
+    NSLog(@"iSH JIT strict diagnostic callback invoked");
     NSString *documents = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory
                                                                inDomains:NSUserDomainMask].firstObject.path;
     if (documents == nil) {
