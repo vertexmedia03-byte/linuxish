@@ -10,6 +10,7 @@
 		A10000000000000000000002 /* ViewController.mm in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* ViewController.mm */; };
 		A10000000000000000000003 /* HelloWorld.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003 /* HelloWorld.cpp */; };
 		A10000000000000000000004 /* main.mm in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000004 /* main.mm */; };
+		A10000000000000000000005 /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B10000000000000000000010 /* UIKit.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -22,6 +23,7 @@
 		B10000000000000000000007 /* HelloWorld.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HelloWorld.h; sourceTree = "<group>"; };
 		B10000000000000000000008 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B10000000000000000000009 /* HelloWorld.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HelloWorld.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B10000000000000000000010 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -29,6 +31,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A10000000000000000000005 /* UIKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -40,6 +43,7 @@
 			children = (
 				D10000000000000000000002 /* HelloWorld */,
 				D10000000000000000000003 /* Products */,
+				D10000000000000000000004 /* Frameworks */,
 			);
 			sourceTree = "<group>";
 		};
@@ -64,6 +68,14 @@
 				B10000000000000000000009 /* HelloWorld.app */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		D10000000000000000000004 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000010 /* UIKit.framework */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
