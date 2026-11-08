@@ -15,7 +15,7 @@
 #import "UIApplication+OpenURL.h"
 #import "NSObject+SaneKVO.h"
 
-@interface AboutViewController ()
+@interface AboutViewController () <UIDocumentPickerDelegate>
 @property (weak, nonatomic) IBOutlet UITableViewCell *capsLockMappingCell;
 @property (weak, nonatomic) IBOutlet UITableViewCell *themeCell;
 @property (weak, nonatomic) IBOutlet UISwitch *disableDimmingSwitch;
@@ -53,6 +53,11 @@
                                                                                  target:self
                                                                                  action:@selector(exitRecovery:)];
         self.navigationItem.leftBarButtonItem = nil;
+    } else {
+        self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"JIT Report Folder"
+                                                                                  style:UIBarButtonItemStylePlain
+                                                                                 target:self
+                                                                                 action:@selector(chooseJITReportFolder:)];
     }
     _versionLabel.text = [NSString stringWithFormat:@"iSH %@ (Build %@)",
                           [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"],
@@ -65,6 +70,33 @@
         });
     }];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(_updateUI:) name:FsUpdatedNotification object:nil];
+}
+
+- (void)chooseJITReportFolder:(id)sender {
+    UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
+                                              initWithDocumentTypes:@[@"public.folder"]
+                                              inMode:UIDocumentPickerModeOpen];
+    picker.delegate = self;
+    [self presentViewController:picker animated:YES completion:nil];
+}
+
+- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    NSURL *url = urls.firstObject;
+    if (url == nil)
+        return;
+
+    NSError *error = nil;
+    if (!SetJITStrictFailureDirectory(url, &error)) {
+        [self presentError:error title:@"Could not save report folder"];
+        return;
+    }
+
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"JIT Report Folder Set"
+                                                                   message:[NSString stringWithFormat:@"Strict JIT failure reports will be saved in %@. Reproduce the crash to create the report.",
+                                                                            url.lastPathComponent]
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)viewWillAppear:(BOOL)animated {

@@ -8,3 +8,4 @@
 #import <Foundation/Foundation.h>
 
 NSURL *ContainerURL(void);
+BOOL SetJITStrictFailureDirectory(NSURL *url, NSError **error);

@@ -107,29 +107,79 @@ NSURL *ContainerURL(void) {
     return [NSFileManager.defaultManager containerURLForSecurityApplicationGroupIdentifier:appGroup];
 }
 
+static NSString *const kJITStrictFailureDirectoryBookmark = @"JIT Strict Failure Directory Bookmark";
+
+BOOL SetJITStrictFailureDirectory(NSURL *url, NSError **error) {
+    NSData *bookmark = [url bookmarkDataWithOptions:0
+                     includingResourceValuesForKeys:nil
+                                      relativeToURL:nil
+                                              error:error];
+    if (bookmark == nil)
+        return NO;
+    [NSUserDefaults.standardUserDefaults setObject:bookmark forKey:kJITStrictFailureDirectoryBookmark];
+    return YES;
+}
+
 void ish_write_jit_strict_failure(const char *reason, uint64_t pc, uint32_t insn) {
     NSLog(@"iSH JIT strict diagnostic callback invoked");
-    NSString *documents = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory
-                                                               inDomains:NSUserDomainMask].firstObject.path;
-    if (documents == nil) {
-        NSLog(@"iSH JIT strict diagnostic: Documents directory is unavailable");
-        return;
-    }
-    NSError *error = nil;
-    if (![NSFileManager.defaultManager createDirectoryAtPath:documents
-                                withIntermediateDirectories:YES
-                                                 attributes:nil
-                                                      error:&error]) {
-        NSLog(@"iSH JIT strict diagnostic: could not create %@: %@", documents, error);
-        return;
-    }
-    NSString *path = [documents stringByAppendingPathComponent:@"ISH-JIT-STRICT-FAILURE.txt"];
     NSString *report = [NSString stringWithFormat:@"JIT strict mode: %s\nguest pc: 0x%llx\ninstruction: 0x%08x\n",
                                                   reason, (unsigned long long) pc, insn];
-    error = nil;
-    if (![report writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
-        NSLog(@"iSH JIT strict diagnostic: could not write %@: %@", path, error);
+    NSData *data = [report dataUsingEncoding:NSUTF8StringEncoding];
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    NSData *bookmark = [defaults dataForKey:kJITStrictFailureDirectoryBookmark];
+    NSURL *directory = nil;
+    NSError *error = nil;
+    BOOL hasScopedAccess = NO;
+    if (bookmark != nil) {
+        BOOL stale = NO;
+        directory = [NSURL URLByResolvingBookmarkData:bookmark
+                                              options:0
+                                        relativeToURL:nil
+                                  bookmarkDataIsStale:&stale
+                                                error:&error];
+        if (directory != nil && !stale)
+            hasScopedAccess = [directory startAccessingSecurityScopedResource];
+        if (directory == nil || stale || !hasScopedAccess) {
+            NSLog(@"iSH JIT strict diagnostic: selected folder unavailable (stale=%d, error=%@)",
+                  stale, error);
+            directory = nil;
+        }
+    }
+
+    if (directory == nil)
+        directory = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory
+                                                         inDomains:NSUserDomainMask].firstObject;
+    if (directory == nil) {
+        NSLog(@"iSH JIT strict diagnostic: no writable destination is available");
         return;
     }
-    NSLog(@"iSH JIT strict diagnostic saved to %@", path);
+
+    NSURL *fileURL = [directory URLByAppendingPathComponent:@"ISH-JIT-STRICT-FAILURE.txt"];
+    error = nil;
+    BOOL saved = [data writeToURL:fileURL options:NSDataWritingAtomic error:&error];
+    if (saved) {
+        NSLog(@"iSH JIT strict diagnostic saved to %@", fileURL.path);
+    } else if (hasScopedAccess) {
+        NSLog(@"iSH JIT strict diagnostic: could not write selected folder %@: %@; trying Documents",
+              fileURL.path, error);
+        [directory stopAccessingSecurityScopedResource];
+        hasScopedAccess = NO;
+        NSURL *documents = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory
+                                                                  inDomains:NSUserDomainMask].firstObject;
+        if (documents == nil) {
+            NSLog(@"iSH JIT strict diagnostic: fallback Documents folder is unavailable");
+        } else {
+            fileURL = [documents URLByAppendingPathComponent:@"ISH-JIT-STRICT-FAILURE.txt"];
+            error = nil;
+            saved = [data writeToURL:fileURL options:NSDataWritingAtomic error:&error];
+            if (saved)
+                NSLog(@"iSH JIT strict diagnostic saved to fallback %@", fileURL.path);
+            else
+                NSLog(@"iSH JIT strict diagnostic: fallback write failed for %@: %@", fileURL.path, error);
+        }
+    } else {
+        NSLog(@"iSH JIT strict diagnostic: could not write %@: %@", fileURL.path, error);
+    }
+    if (hasScopedAccess)
+        [directory stopAccessingSecurityScopedResource];
 }
