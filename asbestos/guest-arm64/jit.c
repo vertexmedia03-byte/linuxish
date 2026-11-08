@@ -25,6 +25,7 @@
 #include "asbestos/guest-arm64/aot.h"
 #include "asbestos/asbestos.h"
 #include "emu/cpu.h"
+#include "emu/interrupt.h"
 #include "emu/mmu.h"
 #include "emu/tlb.h"
 #include "fs/fd.h"
@@ -35,6 +36,7 @@
 
 extern void jit_fiber_ret(void) __asm("fiber_ret");
 extern void jit_fiber_ret_chain(void) __asm("fiber_ret_chain");
+extern void jit_fiber_exit(void) __asm("fiber_exit");
 #ifdef ISH_JIT_STRICT
 extern void ish_write_jit_strict_failure(const char *reason, uint64_t pc, uint32_t insn);
 extern void ish_write_jit_trace(const char *event, uint64_t pc, uint64_t detail, bool reset);
@@ -288,6 +290,7 @@ static int prologue_words;          // cold-entry prologue length (hot entry off
 // otherwise carry inline although it rarely runs (make_stubs()).
 enum {
     STUB_EXIT,      // store the pinned registers; br x8
+    STUB_SYSCALL,   // store guest state and enter the syscall interrupt handler
     STUB_GENERIC,   // x9 = &code[0] of a chained successor not linked to: enter it
     STUB_POKE,      // x9 = the same, the cycle count wrapped: through the run loop
     STUB_UNCH,      // x9 = an unchained slot, w10 = idx << 2 | jump_ip slot (2: none)
@@ -1456,6 +1459,21 @@ static void install_stub(struct em *e, int id) {
     stubs[id] = (uintptr_t) dst;
 }
 
+static void make_syscall_stub(void) {
+    struct em *e = calloc(1, sizeof(*e));
+    if (!e)
+        return;
+    for (int i = 0; i < n_pinned; i++)
+        put(e, 0xF9000000u | ((greg_off(pin_guest[i]) / 8) << 10) | (1u << 5) | (uint32_t) pin_host[i]);
+    if (n_pinned)
+        put(e, 0xB9000000u | ((CPU_cycle / 4) << 10) | (1u << 5) | H_CYC);
+    mov_imm64(e, 0, INT_SYSCALL);
+    mov_host_ptr(e, 8, (const void *) jit_fiber_exit);
+    put(e, 0xD61F0100u);   // br x8
+    install_stub(e, STUB_SYSCALL);
+    free(e);
+}
+
 // PIC with pinned registers: the slow paths of a block end (see
 // emit_chain_outlined()), as emit_chain_ex() has them inline.
 static void make_stubs(void) {
@@ -1839,6 +1857,32 @@ static bool is_pure_const(uint32_t x) {
            ((x & 0x1F800000u) == 0x12800000u && ((x >> 29) & 3) != 3 && ((x >> 29) & 3) != 1);  // movn/movz
 }
 
+static bool is_svc(uint32_t x) {
+    return (x & 0xFFE0001Fu) == 0xD4000001u;
+}
+
+static bool emit_svc_exit(struct em *e, struct fiber_block *b, const struct jit_unit *u) {
+    if (!stubs[STUB_SYSCALL])
+        return false;
+
+    // Keep the syscall interrupt path, but bypass the SVC gadget itself.
+    if (e->loop)
+        emit_canon(e);
+    for (int g = 0; g <= G_SP; g++)
+        if (e->host[g] >= 0 && e->pin[g] < 0)
+            writeback(e, g);
+    if (e->hflags)
+        store_flags(e);
+    if (n_pinned)
+        set_last_block(e, b);
+
+    mov_block_addr(e, 28, code_off(u->start + 1));
+    put(e, 0xF9400000u | (28u << 5) | 11);   // ldr x11, [x28] (next guest PC)
+    put(e, 0xF9000000u | ((CPU_pc / 8) << 10) | (1u << 5) | 11);
+    emit_to_stub(e, STUB_SYSCALL);
+    return !e->fail;
+}
+
 // Translate the block-ending unit (optional leading instruction + branch).
 static bool emit_block_end(struct em *e, struct fiber_block *b, const struct jit_unit *u) {
     if (u->n == 0 || u->follow)
@@ -1852,6 +1896,8 @@ static bool emit_block_end(struct em *e, struct fiber_block *b, const struct jit
     uint32_t x = u->w[u->n - 1];
     uint64_t pc = u->pc + 4 * (u->n - 1);
     e->locked = 0;
+    if (is_svc(x))
+        return emit_svc_exit(e, b, u);
     if (e->loop && ((x & 0xFFFFFC1Fu) == 0xD65F0000u || (x & 0xFFFFFC1Fu) == 0xD61F0000u || (x & 0xFFFFFC1Fu) == 0xD63F0000u))
         return false;
     if ((x & 0xFFFFFC1Fu) == 0xD65F0000u) {                                 // ret
@@ -1983,9 +2029,11 @@ static unsigned emit_segment(struct em *e, struct fiber_block *b, const struct j
                 ended = true;
             } else {
 #ifdef ISH_JIT_STRICT
-                jit_strict_failure("could not translate block-ending instruction",
-                                   u->pc + (u->n ? 4 * (u->n - 1) : 0),
-                                   u->n ? u->w[u->n - 1] : 0);
+                bool syscall_exit = u->n == 1 && is_svc(u->w[0]);
+                if (!syscall_exit)
+                    jit_strict_failure("could not translate block-ending instruction",
+                                       u->pc + (u->n ? 4 * (u->n - 1) : 0),
+                                       u->n ? u->w[u->n - 1] : 0);
 #endif
                 e->link_at[0] = e->link_at[1] = -1;   // only the block end sets them
                 e->n = n0; e->nfix = nfix0; e->nrel = nrel0; e->npool = npool0; e->fail = false; e->hflags = hf0;
@@ -2103,12 +2151,16 @@ static void jit_native(struct fiber_block *b, const struct jit_units *U, struct 
             }
         }
 #ifdef ISH_JIT_STRICT
-        if (ui != U->n || !ended || real == 0) {
+        bool syscall_exit = ui + 1 == U->n && U->u[ui].last &&
+                            U->u[ui].n == 1 && is_svc(U->u[ui].w[0]);
+        if ((ui != U->n || !ended || real == 0) && !syscall_exit) {
             e->complete = false;
             jit_strict_failure("guest block is not fully translatable",
                                ui < U->n ? U->u[ui].pc : b->addr,
                                ui < U->n && U->u[ui].n ? U->u[ui].w[0] : 0);
         }
+        if (syscall_exit)
+            e->complete = false;
 #endif
         if (ui != U->n || !ended || real == 0)
             e->complete = false;
@@ -3435,8 +3487,8 @@ static void rec_write(const char *path) {
     for (unsigned i = 0; i < exit_stub_words; i++)
         fprintf(f, "%s%u", i ? ", " : "", ((uint32_t *) exit_stub)[i]);
     fprintf(f, "], \"stubs\": [");
-    for (int id = STUB_GENERIC; id < NSTUBS && stub_rec[id]; id++) {
-        fprintf(f, "%s{\"words\": [", id > STUB_GENERIC ? ", " : "");
+    for (int id = STUB_SYSCALL; id < NSTUBS && stub_rec[id]; id++) {
+        fprintf(f, "%s{\"words\": [", id > STUB_SYSCALL ? ", " : "");
         for (unsigned j = 0; j < stub_rec[id]->nwords; j++)
             fprintf(f, "%s%u", j ? ", " : "", stub_rec[id]->words[j]);
         fprintf(f, "], \"rel\": [");
@@ -3723,7 +3775,10 @@ static void jit_init(void) {
     rec_mod = getenv("ISH_JIT_RECORD_MOD") ? getenv("ISH_JIT_RECORD_MOD") : "ld-musl";
     if (have_region) {
         make_exit_stub();
-        if (pic_on && n_pinned && !env_off("ISH_JIT_STUBS"))
+        make_syscall_stub();
+        if (!stubs[STUB_SYSCALL])
+            fprintf(stderr, "JIT: syscall fast-exit stub unavailable; using SVC gadgets\n");
+        if (stubs[STUB_SYSCALL] && pic_on && n_pinned && !env_off("ISH_JIT_STUBS"))
             make_stubs();
         jit_exec_ready();
     }
