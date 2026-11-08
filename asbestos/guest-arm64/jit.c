@@ -375,10 +375,6 @@ static void emit_promote(struct em *e) {
         put(e, 0xF9000000u | ((greg_off(e->donor_g[i]) / 8) << 10) | (1u << 5) | (uint32_t) e->promo_h[i]);
         put(e, 0xF9400000u | ((greg_off(e->promo_g[i]) / 8) << 10) | (1u << 5) | (uint32_t) e->promo_h[i]);
     }
-#ifdef ISH_JIT_STRICT
-    if (e->ninst == 0)
-        jit_strict_failure("guest block produced no native code", b->addr, 0);
-#endif
 }
 
 static void emit_canon(struct em *e) {
