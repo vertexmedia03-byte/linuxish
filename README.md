@@ -79,9 +79,9 @@ Open the project in Xcode, open `app/iSH.xcconfig`, and change `ROOT_BUNDLE_IDEN
 
 ## Build an iSH ARM64 IPA with GitHub Actions
 
-The **Build iSH ARM64 IPA for TrollStore** workflow builds the `iSH-ARM64` scheme with its required submodules and native build dependencies. It ad-hoc signs the app and File Provider extension with their configured entitlements, packages `iSH ARM64.app` as an IPA, and uploads the `iSH-ARM64-trollstore-ipa` artifact. These entitlements are required for iSH to access its shared app-group container at launch. The workflow runs on pushes and pull requests to `main`, or can be started manually from the Actions tab.
+The **Build iSH ARM64 IPA for TrollStore** workflow builds the `iSH-ARM64` scheme with its required submodules and native build dependencies, then pseudo-signs the app and File Provider executable with `ldid` and their app-group entitlements. Xcode's iOS device SDK does not permit ad-hoc signing during the build; the post-build signature lets iSH read its app-group entitlement at launch. The workflow packages `iSH ARM64.app` as an IPA and uploads the `iSH-ARM64-trollstore-ipa` artifact. It runs on pushes and pull requests to `main`, or can be started manually from the Actions tab.
 
-Download the artifact from a completed workflow run and install it with TrollStore on a compatible device and iOS version. This ad-hoc-signed IPA is not suitable for App Store or ordinary device installation.
+Download the artifact from a completed workflow run and install it with TrollStore on a compatible device and iOS version. This pseudo-signed IPA is not suitable for App Store or ordinary device installation.
 
 This repository contains the [OpenMinis/ish-arm64](https://github.com/OpenMinis/ish-arm64) source at commit `c5c264da19148512167aa493d7bd4e50aae1b74e`, with its iOS build submodules pinned to the revisions in that source commit. The optional Linux-kernel submodule is omitted because this workflow builds the ARM64 app with iSH's built-in kernel. See [LICENSE.md](LICENSE.md) and [LICENSE.IOS](LICENSE.IOS) for the applicable terms.
 

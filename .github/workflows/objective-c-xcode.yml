@@ -25,7 +25,7 @@ jobs:
           python-version: "3.x"
 
       - name: Install build dependencies
-        run: brew install llvm lld ninja libarchive meson
+        run: brew install llvm lld ninja libarchive meson ldid
 
       - name: Build iSH ARM64
         run: |
@@ -35,20 +35,54 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
-            CODE_SIGNING_ALLOWED=YES \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY=- \
-            CODE_SIGN_STYLE=Manual \
-            DEVELOPMENT_TEAM= \
+            CODE_SIGNING_ALLOWED=NO \
             clean build
 
       - name: Package TrollStore IPA
         run: |
           APP_PATH="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/iSH ARM64.app"
           IPA_ROOT="$RUNNER_TEMP/ipa"
+          APP_BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist")
+          APP_GROUP_ID="group.$APP_BUNDLE_ID"
           test -d "$APP_PATH"
           mkdir -p "$IPA_ROOT/Payload"
           ditto "$APP_PATH" "$IPA_ROOT/Payload/iSH ARM64.app"
+
+          APP_PATH="$IPA_ROOT/Payload/iSH ARM64.app"
+          EXTENSION_PATH=$(find "$APP_PATH/PlugIns" -maxdepth 1 -type d -name '*.appex' -print -quit)
+          test -d "$EXTENSION_PATH"
+          APP_EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Info.plist")
+          EXTENSION_EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$EXTENSION_PATH/Info.plist")
+
+          python3 - "$GITHUB_WORKSPACE/app/iSH.entitlements" "$RUNNER_TEMP/iSH.entitlements" "$APP_GROUP_ID" <<'PY'
+          import plistlib
+          import sys
+
+          source, destination, app_group = sys.argv[1:]
+          with open(source, "rb") as file:
+              entitlements = plistlib.load(file)
+          entitlements["com.apple.security.application-groups"] = [app_group]
+          with open(destination, "wb") as file:
+              plistlib.dump(entitlements, file, fmt=plistlib.FMT_XML)
+          PY
+
+          python3 - "$GITHUB_WORKSPACE/app/FileProvider/iSHFileProvider.entitlements" "$RUNNER_TEMP/iSHFileProvider.entitlements" "$APP_GROUP_ID" <<'PY'
+          import plistlib
+          import sys
+
+          source, destination, app_group = sys.argv[1:]
+          with open(source, "rb") as file:
+              entitlements = plistlib.load(file)
+          entitlements["com.apple.security.application-groups"] = [app_group]
+          with open(destination, "wb") as file:
+              plistlib.dump(entitlements, file, fmt=plistlib.FMT_XML)
+          PY
+
+          ldid -S"$RUNNER_TEMP/iSHFileProvider.entitlements" "$EXTENSION_PATH/$EXTENSION_EXECUTABLE"
+          ldid -S"$RUNNER_TEMP/iSH.entitlements" "$APP_PATH/$APP_EXECUTABLE"
+          ldid -e "$APP_PATH/$APP_EXECUTABLE" | grep -Fq "$APP_GROUP_ID"
+          ldid -e "$EXTENSION_PATH/$EXTENSION_EXECUTABLE" | grep -Fq "$APP_GROUP_ID"
+
           ditto -c -k --sequesterRsrc --keepParent "$IPA_ROOT/Payload" "$RUNNER_TEMP/iSH-ARM64.ipa"
 
       - name: Upload IPA
