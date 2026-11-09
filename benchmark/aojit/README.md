@@ -67,7 +67,7 @@ An image only loads into an ish with the same abi (`jit_abi()`: `JIT_CODE_VERSIO
 again into a new `<abi>/` directory. Within one abi, an image serves its exact module (build-id) and,
 through family matching, other versions of it (`libz.so.1*`, …).
 
-JIT_CODE_VERSION is now 11. The current images under older ABI directories predate the full-block
+JIT_CODE_VERSION is now 16. The current images under older ABI directories predate the full-block
 coverage marker and won't be accepted by strict mode; regenerate them with the current recorder and
 `gen.py`.
 
@@ -203,19 +203,24 @@ In iSH, start counters immediately before the workload and stop them afterward:
 
 ```sh
 echo start > /proc/ish/profile
-python3 -m cProfile -o /tmp/workload.prof your_workload.py
+python3 your_workload.py
 echo stop > /proc/ish/profile
 cat /proc/ish/profile
-python3 -c "import pstats; pstats.Stats('/tmp/workload.prof').strip_dirs().sort_stats('cumulative').print_stats(30)"
 ```
 
-`cProfile` gives Python function-level statistics, while `/proc/ish/profile` reports guest execution,
-gadget transfers, C-side TLB misses, dispatch, syscalls, and JIT decode/translation. Gadget and TLB
-times are subsets of guest-engine time; JIT timings are subsets of dispatch time. Do not add these
+Avoid running `cProfile` in this measurement: call-intensive workloads can slow down dramatically.
+Run it separately if Python function-level statistics are needed.
+
+`/proc/ish/profile` reports guest execution, gadget transfers, C-side TLB misses, dispatch, syscalls,
+and JIT decode/translation. It also samples one in every 256 inline JIT TLB checks and scales their
+measured time to estimate the full workload; the estimate is a subset of guest-engine time, not a
+separate cost to add, and includes timer overhead. Guest-engine time excluding measured gadget time
+is itself an estimate and still includes transitions. JIT timings overlap dispatch. Do not add
 overlapping categories together. Syscall wall totals include time blocked in the kernel; a separate
 per-thread CPU clock excludes time asleep, and the report ranks syscall numbers by CPU time while
 also showing their call counts and wall time. Use that CPU ranking to find syscall work worth
-optimizing. Both profilers add overhead, so compare workload wall time without profiling.
+optimizing. The added sampling instrumentation affects profiled runs, so compare workload wall time
+without profiling.
 
 For a local CLI diagnostic build, add `-Dprofile=true` to the ARM64 Meson setup command.
 

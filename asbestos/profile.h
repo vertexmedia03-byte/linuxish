@@ -18,6 +18,7 @@ void ish_profile_add_syscall(unsigned syscall_num, uint64_t wall_ticks,
                              uint64_t thread_cpu_ns, bool thread_cpu_available);
 void ish_profile_add_jit_decode(uint64_t ticks);
 void ish_profile_add_jit_translate(uint64_t ticks);
+void ish_profile_add_jit_tlb(uint64_t lookups, uint64_t samples, uint64_t sample_ticks);
 int ish_profile_control(const char *cmd, size_t len);
 size_t ish_profile_describe(char *buf, size_t size);
 
