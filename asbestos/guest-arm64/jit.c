@@ -3309,6 +3309,21 @@ static bool in_aot_text(uintptr_t pc, const struct aot_module **img) {
     return false;
 }
 
+bool jit_host_pc_is_translated(uintptr_t pc) {
+    size_t used = atomic_load_explicit(&region_used, memory_order_relaxed);
+    if (region && pc >= (uintptr_t) region && pc - (uintptr_t) region < used)
+        return true;
+    return in_aot_text(pc, NULL);
+}
+
+bool jit_host_pc_offset(uintptr_t pc, uint64_t *off) {
+    size_t used = atomic_load_explicit(&region_used, memory_order_relaxed);
+    if (!region || pc < (uintptr_t) region || pc - (uintptr_t) region >= used)
+        return false;
+    *off = pc - (uintptr_t) region;
+    return true;
+}
+
 // What aot_find_family() found for a key, kept for the next block with the same
 // key (in any process of this ish): another version's module only costs its
 // search once. Keyed by the key's two independent hashes; a translation that

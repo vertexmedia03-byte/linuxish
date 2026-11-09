@@ -226,6 +226,19 @@ also showing their call counts and wall time. Use that CPU ranking to find sysca
 optimizing. The sampled CPU measurement adds clock-read overhead, so compare workload wall time
 without profiling.
 
+On iOS ARM64, the report also samples the interrupted host PC every 1 ms of process CPU time while
+`fiber_enter()` is active. It separates translated JIT/AOT instructions from native iSH helpers and
+host-library code, and lists the hottest 256-byte host-PC buckets. Native PCs are labeled with their
+loaded image and image-relative offset when dyld can resolve them; translated JIT PCs use offsets
+within the generated code region. This is statistical CPU sampling, not exact per-function timing:
+the process-directed signal can be handled by another thread, samples are not wall-time estimates,
+and blocked time is not sampled. The sampler refuses to start if the app already uses `SIGPROF` or
+`ITIMER_PROF`, rather than replacing that handler or timer. After starting once, the diagnostic
+build keeps its inert `SIGPROF` handler installed until process exit so a timer signal already
+pending at stop cannot fall through to the default terminating action; the interval timer itself is
+disabled on stop. If sampling is unavailable, the profile start reports an error; all other profile
+categories remain as described above.
+
 For a local CLI diagnostic build, add `-Dprofile=true` to the ARM64 Meson setup command.
 
 All commands run from the repo root (`ish-arm64-ios-opt`). `R` is a rootfs directory and `ABI`

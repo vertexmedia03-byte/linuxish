@@ -1130,6 +1130,8 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
         }
 #endif
         interrupt = fiber_enter(block, frame, tlb);
+        in_jit = 0;
+        jit_frame = NULL;
 #ifdef ISH_PROFILE
         if (profile_guest_cpu_sample) {
             uint64_t profile_guest_cpu_end;
@@ -1152,8 +1154,6 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
                                   frame->cpu.profile_gadget_calls - profile_gadget_calls);
         }
 #endif
-        in_jit = 0;
-        jit_frame = NULL;
 #ifdef GUEST_ARM64
         frame->cpu.segfault_precise_pc = 0;
         if (interrupt == INT_GPF)

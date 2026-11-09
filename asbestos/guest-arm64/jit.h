@@ -111,6 +111,8 @@ void jit_exec_ready(void);
 // profiler (ISH_BLOCK_PROF_FILE) counts by these.
 int jit_prof_locate(struct tlb *tlb, addr_t pc, uint64_t *off);
 void jit_module_path(int mod, char *buf, size_t size);
+bool jit_host_pc_is_translated(uintptr_t pc);
+bool jit_host_pc_offset(uintptr_t pc, uint64_t *off);
 
 // Host fault in native code: sync pinned guest registers into cpu_state.
 bool jit_crash_sync(void *ucontext);
