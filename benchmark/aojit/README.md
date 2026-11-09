@@ -196,7 +196,8 @@ Instruments Time Profiler when profiling the iOS app itself.
 The GitHub Actions workflow can build a diagnostic IPA with profiling enabled. Run
 **Build iSH ARM64 IPA for TrollStore** using `workflow_dispatch`, select
 `diagnostic_profile`, then download the `iSH-ARM64-profile-ipa` artifact and install it with
-TrollStore. The normal workflow build remains uninstrumented.
+TrollStore. Alternatively, a push commit whose message contains `[diagnostic-profile]` builds the
+same diagnostic artifact. Normal workflow builds remain uninstrumented.
 
 In iSH, start counters immediately before the workload and stop them afterward:
 

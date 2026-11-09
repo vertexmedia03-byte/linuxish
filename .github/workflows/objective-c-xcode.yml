@@ -18,6 +18,8 @@ jobs:
     name: Build and package iSH ARM64 for TrollStore
     runs-on: macos-15
     timeout-minutes: 120
+    env:
+      PROFILE_BUILD: ${{ (github.event_name == 'workflow_dispatch' && inputs.diagnostic_profile) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[diagnostic-profile]')) }}
 
     steps:
       - name: Checkout
@@ -34,13 +36,9 @@ jobs:
         run: brew install llvm lld ninja libarchive meson ldid
 
       - name: Build iSH ARM64
-        env:
-          PROFILE_BUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.diagnostic_profile }}
         run: |
           PROFILE_BUILD_SETTING="ISH_PROFILE=NO"
-          if [ "$PROFILE_BUILD" = "true" ]; then
-            PROFILE_BUILD_SETTING="ISH_PROFILE=YES"
-          fi
+          if [ "$PROFILE_BUILD" = "true" ]; then PROFILE_BUILD_SETTING="ISH_PROFILE=YES"; fi
           xcodebuild \
             -project iSH.xcodeproj \
             -scheme iSH-ARM64 \
@@ -105,6 +103,6 @@ jobs:
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: iSH-ARM64-${{ github.event_name == 'workflow_dispatch' && inputs.diagnostic_profile && 'profile' || 'trollstore' }}-ipa
+          name: iSH-ARM64-${{ ((github.event_name == 'workflow_dispatch' && inputs.diagnostic_profile) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[diagnostic-profile]'))) && 'profile' || 'trollstore' }}-ipa
           path: ${{ runner.temp }}/iSH-ARM64.ipa
           if-no-files-found: error
