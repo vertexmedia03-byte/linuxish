@@ -104,6 +104,7 @@ void cpu() {
     OFFSET(CPU, cpu_state, profile_gadget_start);
     OFFSET(CPU, cpu_state, profile_gadget_ticks);
     OFFSET(CPU, cpu_state, profile_gadget_calls);
+    OFFSET(CPU, cpu_state, profile_active);
     OFFSET(CPU, cpu_state, profile_jit_tlb_start);
     OFFSET(CPU, cpu_state, profile_jit_tlb_lookups);
     OFFSET(CPU, cpu_state, profile_jit_tlb_samples);

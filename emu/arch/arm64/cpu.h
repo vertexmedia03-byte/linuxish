@@ -94,6 +94,7 @@ struct cpu_state {
     uint64_t profile_gadget_start;
     uint64_t profile_gadget_ticks;
     uint64_t profile_gadget_calls;
+    uint64_t profile_active;
     uint64_t profile_jit_tlb_start;
     uint64_t profile_jit_tlb_lookups;
     uint64_t profile_jit_tlb_samples;

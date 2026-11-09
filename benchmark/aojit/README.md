@@ -67,7 +67,7 @@ An image only loads into an ish with the same abi (`jit_abi()`: `JIT_CODE_VERSIO
 again into a new `<abi>/` directory. Within one abi, an image serves its exact module (build-id) and,
 through family matching, other versions of it (`libz.so.1*`, …).
 
-JIT_CODE_VERSION is now 16. The current images under older ABI directories predate the full-block
+JIT_CODE_VERSION is now 17. The current images under older ABI directories predate the full-block
 coverage marker and won't be accepted by strict mode; regenerate them with the current recorder and
 `gen.py`.
 

@@ -1124,9 +1124,11 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
             profile_jit_tlb_samples = frame->cpu.profile_jit_tlb_samples;
             profile_jit_tlb_ticks = frame->cpu.profile_jit_tlb_ticks;
         }
+        frame->cpu.profile_active = profile_sample;
 #endif
         interrupt = fiber_enter(block, frame, tlb);
 #ifdef ISH_PROFILE
+        frame->cpu.profile_active = 0;
         if (profile_sample) {
             uint64_t guest_insns = block && block->end_addr >= block->addr
                 ? (block->end_addr - block->addr) >> 2 : 0;
