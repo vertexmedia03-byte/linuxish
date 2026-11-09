@@ -5,6 +5,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#ifdef ISH_JIT
+#include "asbestos/guest-arm64/jit.h"
+#endif
 
 #define ISH_PROFILE_SYSCALL_MAX 512
 #define ISH_PROFILE_SYSCALL_TOP 8
@@ -122,10 +125,17 @@ void ish_profile_add_guest(uint64_t ticks, uint64_t blocks, uint64_t insns,
     atomic_fetch_add_explicit(&prof_gadget_calls, gadget_calls, memory_order_relaxed);
 }
 
-void ish_profile_add_guest_cpu(uint64_t guest_pc, uint64_t sampled_ns) {
+void ish_profile_add_guest_cpu(int module, uint64_t guest_pc, uint64_t file_offset,
+                               uint64_t sampled_ns) {
     atomic_fetch_add_explicit(&prof_guest_cpu_sample_ns, sampled_ns, memory_order_relaxed);
     atomic_fetch_add_explicit(&prof_guest_cpu_samples, 1, memory_order_relaxed);
-    uint64_t key = (guest_pc >> ISH_PROFILE_GUEST_PC_SHIFT) + 1;
+    uint64_t offset_bucket = (file_offset >> ISH_PROFILE_GUEST_PC_SHIFT) + 1;
+    uint64_t module_key = module >= 0 && module < 65535 ? (uint64_t) module + 1 : 0;
+    if (offset_bucket >= (UINT64_C(1) << 48)) {
+        module_key = 0;
+        offset_bucket = (guest_pc >> ISH_PROFILE_GUEST_PC_SHIFT) + 1;
+    }
+    uint64_t key = (module_key << 48) | offset_bucket;
     unsigned slot = (unsigned) ((key * UINT64_C(11400714819323198485)) >>
                                 (64 - 12));
     for (unsigned probe = 0; probe < ISH_PROFILE_GUEST_PC_PROBES; probe++) {
@@ -261,7 +271,7 @@ size_t ish_profile_describe(char *buf, size_t size) {
         for (unsigned j = ISH_PROFILE_SYSCALL_TOP - 1; j > pos; j--)
             top_guest_pc[j] = top_guest_pc[j - 1];
         top_guest_pc[pos].pc_bucket =
-            atomic_load_explicit(&prof_guest_pc[i].pc_bucket, memory_order_relaxed) - 1;
+            atomic_load_explicit(&prof_guest_pc[i].pc_bucket, memory_order_relaxed);
         top_guest_pc[pos].sample_ns = sample_ns;
         top_guest_pc[pos].samples =
             atomic_load_explicit(&prof_guest_pc[i].samples, memory_order_relaxed);
@@ -303,15 +313,38 @@ size_t ish_profile_describe(char *buf, size_t size) {
     else
         used = profile_append(buf, size, used,
                               "fiber_enter thread CPU: unavailable (no samples or thread CPU clock unsupported)\n");
-    if (guest_cpu_samples != 0) {
+    if (guest_cpu_samples != 0)
         used = profile_append(buf, size, used,
-                              "  hottest guest PC ranges (256-byte buckets; estimated CPU ms, samples):\n");
-        for (unsigned i = 0; i < ISH_PROFILE_SYSCALL_TOP && top_guest_pc[i].samples != 0; i++)
-            used = profile_append(buf, size, used, "    0x%llx: %.3f ms, %llu\n",
-                                  (unsigned long long) (top_guest_pc[i].pc_bucket <<
+                              "  hottest guest module/file-offset ranges (256-byte buckets; estimated CPU ms, samples):\n");
+    for (unsigned i = 0; guest_cpu_samples != 0 && i < ISH_PROFILE_SYSCALL_TOP &&
+                            top_guest_pc[i].samples != 0; i++) {
+        uint64_t module_key = top_guest_pc[i].pc_bucket >> 48;
+        uint64_t offset_bucket = top_guest_pc[i].pc_bucket & ((UINT64_C(1) << 48) - 1);
+        if (module_key != 0) {
+#ifdef ISH_JIT
+            char module_path[1024];
+            jit_module_path((int) module_key - 1, module_path, sizeof(module_path));
+            used = profile_append(buf, size, used, "    %s+0x%llx: %.3f ms, %llu\n",
+                                  module_path,
+                                  (unsigned long long) ((offset_bucket - 1) <<
                                                         ISH_PROFILE_GUEST_PC_SHIFT),
                                   ticks_ms(top_guest_pc[i].sample_ns * 256, 1000000000),
                                   (unsigned long long) top_guest_pc[i].samples);
+#else
+            used = profile_append(buf, size, used, "    module %llu+0x%llx: %.3f ms, %llu\n",
+                                  (unsigned long long) module_key - 1,
+                                  (unsigned long long) ((offset_bucket - 1) <<
+                                                        ISH_PROFILE_GUEST_PC_SHIFT),
+                                  ticks_ms(top_guest_pc[i].sample_ns * 256, 1000000000),
+                                  (unsigned long long) top_guest_pc[i].samples);
+#endif
+        } else {
+            used = profile_append(buf, size, used, "    guest PC 0x%llx: %.3f ms, %llu\n",
+                                  (unsigned long long) ((offset_bucket - 1) <<
+                                                        ISH_PROFILE_GUEST_PC_SHIFT),
+                                  ticks_ms(top_guest_pc[i].sample_ns * 256, 1000000000),
+                                  (unsigned long long) top_guest_pc[i].samples);
+        }
     }
     bool has_cpu_profile = false;
     for (unsigned i = 0; i < ISH_PROFILE_SYSCALL_TOP && top[i].cpu_ns != 0; i++) {
