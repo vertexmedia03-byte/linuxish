@@ -1114,7 +1114,8 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
 #ifdef ISH_PROFILE
         bool profile_guest_cpu_sample = false;
         uint64_t profile_guest_cpu_start = 0;
-        if (profile_sample && ++guest_cpu_sample_counter == 256) {
+        if (profile_sample && ish_profile_cpu_clock_enabled() &&
+            ++guest_cpu_sample_counter == 256) {
             guest_cpu_sample_counter = 0;
             profile_guest_cpu_sample =
                 ish_profile_thread_cpu_time(&profile_guest_cpu_start);

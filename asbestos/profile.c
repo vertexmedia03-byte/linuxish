@@ -39,6 +39,7 @@ extern __thread volatile sig_atomic_t in_jit;
 #define ISH_PROFILE_HOST_PAIR_PROBES 16
 
 _Atomic unsigned char ish_profile_enabled;
+static _Atomic bool prof_cpu_clock_enabled;
 
 static _Atomic uint64_t prof_dispatch_ticks;
 static _Atomic uint64_t prof_guest_ticks;
@@ -104,6 +105,10 @@ bool ish_profile_active(void) {
     return atomic_load_explicit(&ish_profile_enabled, memory_order_relaxed) != 0;
 }
 
+bool ish_profile_cpu_clock_enabled(void) {
+    return atomic_load_explicit(&prof_cpu_clock_enabled, memory_order_relaxed);
+}
+
 uint64_t ish_profile_ticks(void) {
 #if defined(__aarch64__)
     uint64_t ticks;
@@ -127,6 +132,8 @@ uint64_t ish_profile_ticks_per_second(void) {
 }
 
 bool ish_profile_thread_cpu_time(uint64_t *nanoseconds) {
+    if (!ish_profile_cpu_clock_enabled())
+        return false;
 #if defined(CLOCK_THREAD_CPUTIME_ID)
     struct timespec ts;
     if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0)
@@ -461,11 +468,15 @@ static void profile_host_pc_label(char *buf, size_t size, uintptr_t pc) {
 int ish_profile_control(const char *cmd, size_t len) {
     while (len && (cmd[len - 1] == '\n' || cmd[len - 1] == '\r' || cmd[len - 1] == ' '))
         len--;
-    if (len == 5 && !memcmp(cmd, "start", 5)) {
+    bool cpu_clock_enabled = len == 5 && !memcmp(cmd, "start", 5);
+    bool host_only = len == 10 && !memcmp(cmd, "start-host", 10);
+    if (cpu_clock_enabled || host_only) {
         atomic_store_explicit(&ish_profile_enabled, 0, memory_order_release);
         if (ish_profile_host_sampler_stop() != 0)
             return -1;
         ish_profile_reset();
+        atomic_store_explicit(&prof_cpu_clock_enabled, cpu_clock_enabled,
+                              memory_order_relaxed);
         if (ish_profile_host_sampler_start() != 0)
             return -1;
         atomic_store_explicit(&ish_profile_enabled, 1, memory_order_release);
@@ -473,7 +484,9 @@ int ish_profile_control(const char *cmd, size_t len) {
     }
     if (len == 4 && !memcmp(cmd, "stop", 4)) {
         atomic_store_explicit(&ish_profile_enabled, 0, memory_order_release);
-        return ish_profile_host_sampler_stop();
+        int result = ish_profile_host_sampler_stop();
+        atomic_store_explicit(&prof_cpu_clock_enabled, false, memory_order_relaxed);
+        return result;
     }
     if (len == 5 && !memcmp(cmd, "reset", 5)) {
         ish_profile_reset();
@@ -612,6 +625,8 @@ size_t ish_profile_describe(char *buf, size_t size) {
     if (n < 0)
         return 0;
     size_t used = (size_t) n < size ? (size_t) n : size - 1;
+    used = profile_append(buf, size, used, "thread CPU clock instrumentation: %s\n",
+                          ish_profile_cpu_clock_enabled() ? "enabled" : "disabled");
     uint64_t host_translated_samples =
         atomic_load_explicit(&prof_host_pc_translated_samples, memory_order_relaxed);
     uint64_t host_native_samples =
@@ -661,6 +676,9 @@ size_t ish_profile_describe(char *buf, size_t size) {
                               (unsigned long long) guest_cpu_samples,
                               (unsigned long long) atomic_load_explicit(
                                   &prof_guest_cpu_dropped_samples, memory_order_relaxed));
+    else if (!ish_profile_cpu_clock_enabled())
+        used = profile_append(buf, size, used,
+                              "fiber_enter thread CPU: disabled for host-only measurement\n");
     else
         used = profile_append(buf, size, used,
                               "fiber_enter thread CPU: unavailable (no samples or thread CPU clock unsupported)\n");

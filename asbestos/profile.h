@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 bool ish_profile_active(void);
+bool ish_profile_cpu_clock_enabled(void);
 uint64_t ish_profile_ticks(void);
 uint64_t ish_profile_ticks_per_second(void);
 bool ish_profile_thread_cpu_time(uint64_t *nanoseconds);

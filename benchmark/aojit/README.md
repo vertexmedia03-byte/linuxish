@@ -202,11 +202,16 @@ same diagnostic artifact. Normal workflow builds remain uninstrumented.
 In iSH, start counters immediately before the workload and stop them afterward:
 
 ```sh
-echo start > /proc/ish/profile
+echo start-host > /proc/ish/profile
 python3 your_workload.py
 echo stop > /proc/ish/profile
 cat /proc/ish/profile
 ```
+
+Use `start-host` for the host-PC experiment: it disables the profiler's
+`CLOCK_THREAD_CPUTIME_ID` measurements while keeping wall/syscall counters and host-PC sampling.
+This avoids sampling the profiler's own thread-CPU clock calls as though they were emulator work.
+Use `start` when the per-syscall and sampled `fiber_enter()` thread CPU breakdowns are desired.
 
 Avoid running `cProfile` in this measurement: call-intensive workloads can slow down dramatically.
 Run it separately if Python function-level statistics are needed.
