@@ -242,12 +242,22 @@ void task_run_current() {
 #ifdef ISH_PROFILE
         bool profile_syscall = interrupt == INT_SYSCALL && ish_profile_active();
         uint64_t profile_syscall_start = profile_syscall ? ish_profile_ticks() : 0;
+        uint64_t profile_syscall_cpu_start = 0;
+        bool profile_syscall_cpu_available = profile_syscall &&
+            ish_profile_thread_cpu_time(&profile_syscall_cpu_start);
         unsigned profile_syscall_num = profile_syscall ? (unsigned) cpu->regs[8] : 0;
 #endif
         handle_interrupt(interrupt);
 #ifdef ISH_PROFILE
-        if (profile_syscall)
-            ish_profile_add_syscall(profile_syscall_num, ish_profile_ticks() - profile_syscall_start);
+        if (profile_syscall) {
+            uint64_t profile_syscall_cpu_end = 0;
+            bool cpu_end_available = ish_profile_thread_cpu_time(&profile_syscall_cpu_end);
+            bool cpu_available = profile_syscall_cpu_available && cpu_end_available &&
+                profile_syscall_cpu_end >= profile_syscall_cpu_start;
+            uint64_t cpu_ns = cpu_available ? profile_syscall_cpu_end - profile_syscall_cpu_start : 0;
+            ish_profile_add_syscall(profile_syscall_num, ish_profile_ticks() - profile_syscall_start,
+                                    cpu_ns, cpu_available);
+        }
 #endif
     }
 

@@ -212,10 +212,10 @@ python3 -c "import pstats; pstats.Stats('/tmp/workload.prof').strip_dirs().sort_
 `cProfile` gives Python function-level statistics, while `/proc/ish/profile` reports guest execution,
 gadget transfers, C-side TLB misses, dispatch, syscalls, and JIT decode/translation. Gadget and TLB
 times are subsets of guest-engine time; JIT timings are subsets of dispatch time. Do not add these
-overlapping categories together. Syscall totals are summed wall time across threads and can include
-blocking; the report also lists syscall numbers, call counts, and the top eight by accumulated time.
-Both profilers add overhead, so use them to locate hot areas and then compare workload wall time
-without profiling.
+overlapping categories together. Syscall wall totals include time blocked in the kernel; a separate
+per-thread CPU clock excludes time asleep, and the report ranks syscall numbers by CPU time while
+also showing their call counts and wall time. Use that CPU ranking to find syscall work worth
+optimizing. Both profilers add overhead, so compare workload wall time without profiling.
 
 For a local CLI diagnostic build, add `-Dprofile=true` to the ARM64 Meson setup command.
 

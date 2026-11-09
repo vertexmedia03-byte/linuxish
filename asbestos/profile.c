@@ -1,4 +1,6 @@
+#define _POSIX_C_SOURCE 200809L
 #include "asbestos/profile.h"
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
@@ -21,6 +23,9 @@ static _Atomic uint64_t prof_syscall_ticks;
 static _Atomic uint64_t prof_syscall_calls;
 static _Atomic uint64_t prof_syscall_by_num[ISH_PROFILE_SYSCALL_MAX];
 static _Atomic uint64_t prof_syscall_ticks_by_num[ISH_PROFILE_SYSCALL_MAX];
+static _Atomic uint64_t prof_syscall_cpu_ns;
+static _Atomic uint64_t prof_syscall_cpu_samples;
+static _Atomic uint64_t prof_syscall_cpu_ns_by_num[ISH_PROFILE_SYSCALL_MAX];
 static _Atomic uint64_t prof_jit_decode_ticks;
 static _Atomic uint64_t prof_jit_translate_ticks;
 
@@ -50,6 +55,19 @@ uint64_t ish_profile_ticks_per_second(void) {
 #endif
 }
 
+bool ish_profile_thread_cpu_time(uint64_t *nanoseconds) {
+#if defined(CLOCK_THREAD_CPUTIME_ID)
+    struct timespec ts;
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0)
+        return false;
+    *nanoseconds = (uint64_t) ts.tv_sec * 1000000000 + (uint64_t) ts.tv_nsec;
+    return true;
+#else
+    (void) nanoseconds;
+    return false;
+#endif
+}
+
 void ish_profile_reset(void) {
     atomic_store_explicit(&prof_dispatch_ticks, 0, memory_order_relaxed);
     atomic_store_explicit(&prof_guest_ticks, 0, memory_order_relaxed);
@@ -61,9 +79,12 @@ void ish_profile_reset(void) {
     atomic_store_explicit(&prof_tlb_misses, 0, memory_order_relaxed);
     atomic_store_explicit(&prof_syscall_ticks, 0, memory_order_relaxed);
     atomic_store_explicit(&prof_syscall_calls, 0, memory_order_relaxed);
+    atomic_store_explicit(&prof_syscall_cpu_ns, 0, memory_order_relaxed);
+    atomic_store_explicit(&prof_syscall_cpu_samples, 0, memory_order_relaxed);
     for (unsigned i = 0; i < ISH_PROFILE_SYSCALL_MAX; i++) {
         atomic_store_explicit(&prof_syscall_by_num[i], 0, memory_order_relaxed);
         atomic_store_explicit(&prof_syscall_ticks_by_num[i], 0, memory_order_relaxed);
+        atomic_store_explicit(&prof_syscall_cpu_ns_by_num[i], 0, memory_order_relaxed);
     }
     atomic_store_explicit(&prof_jit_decode_ticks, 0, memory_order_relaxed);
     atomic_store_explicit(&prof_jit_translate_ticks, 0, memory_order_relaxed);
@@ -87,12 +108,20 @@ void ish_profile_add_tlb_miss(uint64_t ticks) {
     atomic_fetch_add_explicit(&prof_tlb_misses, 1, memory_order_relaxed);
 }
 
-void ish_profile_add_syscall(unsigned syscall_num, uint64_t ticks) {
-    atomic_fetch_add_explicit(&prof_syscall_ticks, ticks, memory_order_relaxed);
+void ish_profile_add_syscall(unsigned syscall_num, uint64_t wall_ticks,
+                              uint64_t thread_cpu_ns, bool thread_cpu_available) {
+    atomic_fetch_add_explicit(&prof_syscall_ticks, wall_ticks, memory_order_relaxed);
     atomic_fetch_add_explicit(&prof_syscall_calls, 1, memory_order_relaxed);
+    if (thread_cpu_available) {
+        atomic_fetch_add_explicit(&prof_syscall_cpu_ns, thread_cpu_ns, memory_order_relaxed);
+        atomic_fetch_add_explicit(&prof_syscall_cpu_samples, 1, memory_order_relaxed);
+    }
     if (syscall_num < ISH_PROFILE_SYSCALL_MAX) {
         atomic_fetch_add_explicit(&prof_syscall_by_num[syscall_num], 1, memory_order_relaxed);
-        atomic_fetch_add_explicit(&prof_syscall_ticks_by_num[syscall_num], ticks, memory_order_relaxed);
+        atomic_fetch_add_explicit(&prof_syscall_ticks_by_num[syscall_num], wall_ticks, memory_order_relaxed);
+        if (thread_cpu_available)
+            atomic_fetch_add_explicit(&prof_syscall_cpu_ns_by_num[syscall_num], thread_cpu_ns,
+                                      memory_order_relaxed);
     }
 }
 
@@ -106,6 +135,18 @@ void ish_profile_add_jit_translate(uint64_t ticks) {
 
 static double ticks_ms(uint64_t ticks, uint64_t frequency) {
     return frequency ? (double) ticks * 1000.0 / (double) frequency : 0;
+}
+
+static size_t profile_append(char *buf, size_t size, size_t used, const char *format, ...) {
+    if (used >= size - 1)
+        return used;
+    va_list args;
+    va_start(args, format);
+    int n = vsnprintf(buf + used, size - used, format, args);
+    va_end(args);
+    if (n < 0)
+        return used;
+    return (size_t) n >= size - used ? size - 1 : used + (size_t) n;
 }
 
 int ish_profile_control(const char *cmd, size_t len) {
@@ -134,15 +175,16 @@ size_t ish_profile_describe(char *buf, size_t size) {
     struct {
         unsigned syscall_num;
         uint64_t calls;
-        uint64_t ticks;
+        uint64_t cpu_ns;
+        uint64_t wall_ticks;
     } top[ISH_PROFILE_SYSCALL_TOP] = {};
     for (unsigned syscall_num = 0; syscall_num < ISH_PROFILE_SYSCALL_MAX; syscall_num++) {
         uint64_t calls = atomic_load_explicit(&prof_syscall_by_num[syscall_num], memory_order_relaxed);
-        uint64_t ticks = atomic_load_explicit(&prof_syscall_ticks_by_num[syscall_num], memory_order_relaxed);
-        if (calls == 0)
+        uint64_t cpu_ns = atomic_load_explicit(&prof_syscall_cpu_ns_by_num[syscall_num], memory_order_relaxed);
+        if (calls == 0 || cpu_ns == 0)
             continue;
         unsigned pos = ISH_PROFILE_SYSCALL_TOP;
-        while (pos > 0 && ticks > top[pos - 1].ticks)
+        while (pos > 0 && cpu_ns > top[pos - 1].cpu_ns)
             pos--;
         if (pos == ISH_PROFILE_SYSCALL_TOP)
             continue;
@@ -150,7 +192,9 @@ size_t ish_profile_describe(char *buf, size_t size) {
             top[i] = top[i - 1];
         top[pos].syscall_num = syscall_num;
         top[pos].calls = calls;
-        top[pos].ticks = ticks;
+        top[pos].cpu_ns = cpu_ns;
+        top[pos].wall_ticks = atomic_load_explicit(&prof_syscall_ticks_by_num[syscall_num],
+                                                   memory_order_relaxed);
     }
     int n = snprintf(buf, size,
         "state: %s\n"
@@ -159,19 +203,8 @@ size_t ish_profile_describe(char *buf, size_t size) {
         "gadgets (subset of guest engine): %.3f ms, %llu transfers\n"
         "dispatch before guest execution: %.3f ms\n"
         "TLB miss handling (subset of guest engine): %.3f ms, %llu misses\n"
-        "syscall handler wall-time sum (all threads): %.3f ms, %llu calls\n"
-        "  top syscalls by time (number: calls, ms):\n"
-        "    %u: %llu, %.3f ms\n"
-        "    %u: %llu, %.3f ms\n"
-        "    %u: %llu, %.3f ms\n"
-        "    %u: %llu, %.3f ms\n"
-        "    %u: %llu, %.3f ms\n"
-        "    %u: %llu, %.3f ms\n"
-        "    %u: %llu, %.3f ms\n"
-        "    %u: %llu, %.3f ms\n"
-        "JIT decode: %.3f ms\n"
-        "JIT translation/lookup: %.3f ms\n"
-        "note: syscall times sum across threads and can include blocking; gadget and TLB overlap guest time; JIT overlaps dispatch.\n",
+        "syscalls: wall sum %.3f ms across threads; thread CPU %.3f ms (%llu/%llu calls timed)\n"
+        "  top by thread CPU (number: calls, CPU ms, wall ms):\n",
         ish_profile_active() ? "running" : "stopped",
         ticks_ms(atomic_load_explicit(&prof_guest_ticks, memory_order_relaxed), frequency),
         (unsigned long long) atomic_load_explicit(&prof_guest_blocks, memory_order_relaxed),
@@ -182,16 +215,27 @@ size_t ish_profile_describe(char *buf, size_t size) {
         ticks_ms(atomic_load_explicit(&prof_tlb_ticks, memory_order_relaxed), frequency),
         (unsigned long long) atomic_load_explicit(&prof_tlb_misses, memory_order_relaxed),
         ticks_ms(atomic_load_explicit(&prof_syscall_ticks, memory_order_relaxed), frequency),
-        (unsigned long long) atomic_load_explicit(&prof_syscall_calls, memory_order_relaxed),
-        top[0].syscall_num, (unsigned long long) top[0].calls, ticks_ms(top[0].ticks, frequency),
-        top[1].syscall_num, (unsigned long long) top[1].calls, ticks_ms(top[1].ticks, frequency),
-        top[2].syscall_num, (unsigned long long) top[2].calls, ticks_ms(top[2].ticks, frequency),
-        top[3].syscall_num, (unsigned long long) top[3].calls, ticks_ms(top[3].ticks, frequency),
-        top[4].syscall_num, (unsigned long long) top[4].calls, ticks_ms(top[4].ticks, frequency),
-        top[5].syscall_num, (unsigned long long) top[5].calls, ticks_ms(top[5].ticks, frequency),
-        top[6].syscall_num, (unsigned long long) top[6].calls, ticks_ms(top[6].ticks, frequency),
-        top[7].syscall_num, (unsigned long long) top[7].calls, ticks_ms(top[7].ticks, frequency),
-        ticks_ms(atomic_load_explicit(&prof_jit_decode_ticks, memory_order_relaxed), frequency),
-        ticks_ms(atomic_load_explicit(&prof_jit_translate_ticks, memory_order_relaxed), frequency));
-    return n < 0 ? 0 : (size_t) n < size ? (size_t) n : size - 1;
+        ticks_ms(atomic_load_explicit(&prof_syscall_cpu_ns, memory_order_relaxed), 1000000000),
+        (unsigned long long) atomic_load_explicit(&prof_syscall_cpu_samples, memory_order_relaxed),
+        (unsigned long long) atomic_load_explicit(&prof_syscall_calls, memory_order_relaxed));
+    if (n < 0)
+        return 0;
+    size_t used = (size_t) n < size ? (size_t) n : size - 1;
+    bool has_cpu_profile = false;
+    for (unsigned i = 0; i < ISH_PROFILE_SYSCALL_TOP && top[i].cpu_ns != 0; i++) {
+        has_cpu_profile = true;
+        used = profile_append(buf, size, used, "    %u: %llu, %.3f, %.3f ms\n",
+                              top[i].syscall_num, (unsigned long long) top[i].calls,
+                              ticks_ms(top[i].cpu_ns, 1000000000),
+                              ticks_ms(top[i].wall_ticks, frequency));
+    }
+    if (!has_cpu_profile)
+        used = profile_append(buf, size, used, "    unavailable (thread CPU clock unsupported or no calls timed)\n");
+    used = profile_append(buf, size, used,
+                          "JIT decode: %.3f ms\n"
+                          "JIT translation/lookup: %.3f ms\n"
+                          "note: syscall wall time includes blocking; thread CPU time excludes sleeps. Gadget/TLB overlap guest; JIT overlaps dispatch.\n",
+                          ticks_ms(atomic_load_explicit(&prof_jit_decode_ticks, memory_order_relaxed), frequency),
+                          ticks_ms(atomic_load_explicit(&prof_jit_translate_ticks, memory_order_relaxed), frequency));
+    return used;
 }

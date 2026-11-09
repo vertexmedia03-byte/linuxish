@@ -186,7 +186,7 @@ static ssize_t proc_ish_write_jit(struct proc_entry *UNUSED(entry), struct proc_
 
 #ifdef ISH_PROFILE
 static int proc_ish_show_profile(struct proc_entry *UNUSED(entry), struct proc_data *buf) {
-    char text[1024];
+    char text[2048];
     ish_profile_describe(text, sizeof(text));
     proc_printf(buf, "%s", text);
     return 0;
