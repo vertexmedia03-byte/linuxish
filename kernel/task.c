@@ -242,11 +242,12 @@ void task_run_current() {
 #ifdef ISH_PROFILE
         bool profile_syscall = interrupt == INT_SYSCALL && ish_profile_active();
         uint64_t profile_syscall_start = profile_syscall ? ish_profile_ticks() : 0;
+        unsigned profile_syscall_num = profile_syscall ? (unsigned) cpu->regs[8] : 0;
 #endif
         handle_interrupt(interrupt);
 #ifdef ISH_PROFILE
         if (profile_syscall)
-            ish_profile_add_syscall(ish_profile_ticks() - profile_syscall_start);
+            ish_profile_add_syscall(profile_syscall_num, ish_profile_ticks() - profile_syscall_start);
 #endif
     }
 

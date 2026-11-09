@@ -13,7 +13,7 @@ void ish_profile_add_dispatch(uint64_t ticks);
 void ish_profile_add_guest(uint64_t ticks, uint64_t blocks, uint64_t insns,
                            uint64_t gadget_ticks, uint64_t gadget_calls);
 void ish_profile_add_tlb_miss(uint64_t ticks);
-void ish_profile_add_syscall(uint64_t ticks);
+void ish_profile_add_syscall(unsigned syscall_num, uint64_t ticks);
 void ish_profile_add_jit_decode(uint64_t ticks);
 void ish_profile_add_jit_translate(uint64_t ticks);
 int ish_profile_control(const char *cmd, size_t len);
