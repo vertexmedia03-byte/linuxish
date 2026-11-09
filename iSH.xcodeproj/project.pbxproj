@@ -66,7 +66,6 @@
 		497F6D18254E5EA600C82F46 /* gen.c in Sources */ = {isa = PBXBuildFile; fileRef = 497F6C3D254E5C4F00C82F46 /* gen.c */; };
 		497F6D19254E5EA600C82F46 /* helpers.c in Sources */ = {isa = PBXBuildFile; fileRef = 497F6C3B254E5C4F00C82F46 /* helpers.c */; };
 		497F6D1A254E5EA600C82F46 /* asbestos.c in Sources */ = {isa = PBXBuildFile; fileRef = 497F6C40254E5C4F00C82F46 /* asbestos.c */; };
-		C4A000000000000000000001 /* profile.c in Sources */ = {isa = PBXBuildFile; fileRef = C4A000000000000000000002 /* profile.c */; };
 		497F6D1B254E5EA600C82F46 /* offsets.c in Sources */ = {isa = PBXBuildFile; fileRef = 497F6C3C254E5C4F00C82F46 /* offsets.c */; };
 		497F6D1C254E5EA600C82F46 /* calls.c in Sources */ = {isa = PBXBuildFile; fileRef = 497F6C9F254E5C9800C82F46 /* calls.c */; };
 		497F6D1D254E5EA600C82F46 /* epoll.c in Sources */ = {isa = PBXBuildFile; fileRef = 497F6C7D254E5C9700C82F46 /* epoll.c */; };
@@ -628,7 +627,6 @@
 		497F6C3E254E5C4F00C82F46 /* gen.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = gen.h; sourceTree = "<group>"; };
 		497F6C3F254E5C4F00C82F46 /* frame.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = frame.h; sourceTree = "<group>"; };
 		497F6C40254E5C4F00C82F46 /* asbestos.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = asbestos.c; sourceTree = "<group>"; };
-		C4A000000000000000000002 /* profile.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = profile.c; sourceTree = "<group>"; };
 		497F6C41254E5C4F00C82F46 /* asbestos.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = asbestos.h; sourceTree = "<group>"; };
 		497F6C58254E5C7E00C82F46 /* cpuid.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = cpuid.h; sourceTree = "<group>"; };
 		497F6C59254E5C7E00C82F46 /* tlb.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = tlb.c; sourceTree = "<group>"; };
@@ -1393,7 +1391,6 @@
 			isa = PBXGroup;
 			children = (
 				497F6C40254E5C4F00C82F46 /* asbestos.c */,
-				C4A000000000000000000002 /* profile.c */,
 				497F6C3D254E5C4F00C82F46 /* gen.c */,
 				497F6C3B254E5C4F00C82F46 /* helpers.c */,
 				497F6C3C254E5C4F00C82F46 /* offsets.c */,
@@ -2450,7 +2447,6 @@
 				497F6D18254E5EA600C82F46 /* gen.c in Sources */,
 				497F6D19254E5EA600C82F46 /* helpers.c in Sources */,
 				497F6D1A254E5EA600C82F46 /* asbestos.c in Sources */,
-				C4A000000000000000000001 /* profile.c in Sources */,
 				497F6D1B254E5EA600C82F46 /* offsets.c in Sources */,
 				497F6D1C254E5EA600C82F46 /* calls.c in Sources */,
 				497F6D1D254E5EA600C82F46 /* epoll.c in Sources */,

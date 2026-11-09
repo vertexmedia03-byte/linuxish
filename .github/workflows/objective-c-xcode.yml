@@ -37,9 +37,9 @@ jobs:
         env:
           PROFILE_BUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.diagnostic_profile }}
         run: |
-          PROFILE_BUILD_SETTING=""
+          PROFILE_BUILD_SETTING="ISH_PROFILE=NO"
           if [ "$PROFILE_BUILD" = "true" ]; then
-            PROFILE_BUILD_SETTING="ISH_PROFILE_DEFINE=ISH_PROFILE=1"
+            PROFILE_BUILD_SETTING="ISH_PROFILE=YES"
           fi
           xcodebuild \
             -project iSH.xcodeproj \
@@ -48,7 +48,7 @@ jobs:
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             CODE_SIGNING_ALLOWED=NO \
-            $PROFILE_BUILD_SETTING \
+            "$PROFILE_BUILD_SETTING" \
             clean build
 
       - name: Package TrollStore IPA
