@@ -230,7 +230,10 @@ On iOS ARM64, the report also samples the interrupted host PC every 1 ms of proc
 `fiber_enter()` is active. It separates translated JIT/AOT instructions from native iSH helpers and
 host-library code, and lists the hottest 256-byte host-PC buckets. Native PCs are labeled with their
 loaded image and image-relative offset when dyld can resolve them; translated JIT PCs use offsets
-within the generated code region. This is statistical CPU sampling, not exact per-function timing:
+within the generated code region. It also reports the saved ARM64 link register (LR) bucket paired
+with each sampled PC, as a clue to the immediate call site for native/library hotspots. LR is not a
+stack unwind and may not identify the original iSH caller when the code is nested in library
+wrappers. This is statistical CPU sampling, not exact per-function timing:
 the process-directed signal can be handled by another thread, samples are not wall-time estimates,
 and blocked time is not sampled. The sampler refuses to start if the app already uses `SIGPROF` or
 `ITIMER_PROF`, rather than replacing that handler or timer. After starting once, the diagnostic

@@ -35,6 +35,8 @@ extern __thread volatile sig_atomic_t in_jit;
 #define ISH_PROFILE_HOST_PC_BUCKETS 4096
 #define ISH_PROFILE_HOST_PC_PROBES 16
 #define ISH_PROFILE_HOST_PC_SHIFT 8
+#define ISH_PROFILE_HOST_PAIR_BUCKETS 4096
+#define ISH_PROFILE_HOST_PAIR_PROBES 16
 
 _Atomic unsigned char ish_profile_enabled;
 
@@ -54,9 +56,16 @@ static struct {
     _Atomic uint64_t pc_bucket;
     _Atomic uint64_t samples;
 } prof_host_pc[ISH_PROFILE_HOST_PC_BUCKETS];
+static struct {
+    _Atomic uint64_t state;
+    _Atomic uint64_t pc_bucket;
+    _Atomic uint64_t lr_bucket;
+    _Atomic uint64_t samples;
+} prof_host_pairs[ISH_PROFILE_HOST_PAIR_BUCKETS];
 static _Atomic uint64_t prof_host_pc_translated_samples;
 static _Atomic uint64_t prof_host_pc_native_samples;
 static _Atomic uint64_t prof_host_pc_dropped_samples;
+static _Atomic uint64_t prof_host_pair_dropped_samples;
 static _Atomic uint64_t prof_gadget_ticks;
 static _Atomic uint64_t prof_gadget_calls;
 static _Atomic uint64_t prof_tlb_ticks;
@@ -82,11 +91,12 @@ static void profile_host_pc_signal(int sig, siginfo_t *info, void *context) {
         return;
     const ucontext_t *uc = context;
     uintptr_t pc = (uintptr_t) uc->uc_mcontext->__ss.__pc;
+    uintptr_t lr = (uintptr_t) uc->uc_mcontext->__ss.__lr;
     bool translated = false;
 #ifdef ISH_JIT
     translated = jit_host_pc_is_translated(pc);
 #endif
-    ish_profile_record_host_pc(pc, translated);
+    ish_profile_record_host_pc(pc, lr, translated);
 }
 #endif
 
@@ -228,9 +238,16 @@ void ish_profile_reset(void) {
         atomic_store_explicit(&prof_host_pc[i].pc_bucket, 0, memory_order_relaxed);
         atomic_store_explicit(&prof_host_pc[i].samples, 0, memory_order_relaxed);
     }
+    for (unsigned i = 0; i < ISH_PROFILE_HOST_PAIR_BUCKETS; i++) {
+        atomic_store_explicit(&prof_host_pairs[i].state, 0, memory_order_relaxed);
+        atomic_store_explicit(&prof_host_pairs[i].pc_bucket, 0, memory_order_relaxed);
+        atomic_store_explicit(&prof_host_pairs[i].lr_bucket, 0, memory_order_relaxed);
+        atomic_store_explicit(&prof_host_pairs[i].samples, 0, memory_order_relaxed);
+    }
     atomic_store_explicit(&prof_host_pc_translated_samples, 0, memory_order_relaxed);
     atomic_store_explicit(&prof_host_pc_native_samples, 0, memory_order_relaxed);
     atomic_store_explicit(&prof_host_pc_dropped_samples, 0, memory_order_relaxed);
+    atomic_store_explicit(&prof_host_pair_dropped_samples, 0, memory_order_relaxed);
     atomic_store_explicit(&prof_gadget_ticks, 0, memory_order_relaxed);
     atomic_store_explicit(&prof_gadget_calls, 0, memory_order_relaxed);
     atomic_store_explicit(&prof_tlb_ticks, 0, memory_order_relaxed);
@@ -248,7 +265,7 @@ void ish_profile_reset(void) {
     atomic_store_explicit(&prof_jit_translate_ticks, 0, memory_order_relaxed);
 }
 
-void ish_profile_record_host_pc(uintptr_t pc, bool translated) {
+void ish_profile_record_host_pc(uintptr_t pc, uintptr_t lr, bool translated) {
     if (translated)
         atomic_fetch_add_explicit(&prof_host_pc_translated_samples, 1, memory_order_relaxed);
     else
@@ -261,6 +278,7 @@ void ish_profile_record_host_pc(uintptr_t pc, bool translated) {
     }
     unsigned slot = (unsigned) ((bucket * UINT64_C(11400714819323198485)) >>
                                 (64 - 12));
+    bool pc_recorded = false;
     for (unsigned probe = 0; probe < ISH_PROFILE_HOST_PC_PROBES; probe++) {
         unsigned i = (slot + probe) & (ISH_PROFILE_HOST_PC_BUCKETS - 1);
         uint64_t found = atomic_load_explicit(&prof_host_pc[i].pc_bucket, memory_order_relaxed);
@@ -269,10 +287,56 @@ void ish_profile_record_host_pc(uintptr_t pc, bool translated) {
                 &prof_host_pc[i].pc_bucket, &found, bucket,
                 memory_order_relaxed, memory_order_relaxed))) {
             atomic_fetch_add_explicit(&prof_host_pc[i].samples, 1, memory_order_relaxed);
+            pc_recorded = true;
+            break;
+        }
+    }
+    if (!pc_recorded)
+        atomic_fetch_add_explicit(&prof_host_pc_dropped_samples, 1, memory_order_relaxed);
+
+    uint64_t lr_bucket = (uint64_t) lr &
+                         ~((UINT64_C(1) << ISH_PROFILE_HOST_PC_SHIFT) - 1);
+    uint64_t pair_hash = bucket ^ (lr_bucket + UINT64_C(0x9e3779b97f4a7c15) +
+                                   (bucket << 6) + (bucket >> 2));
+    unsigned pair_slot = (unsigned) ((pair_hash * UINT64_C(11400714819323198485)) >>
+                                     (64 - 12));
+    for (unsigned probe = 0; probe < ISH_PROFILE_HOST_PAIR_PROBES; probe++) {
+        unsigned i = (pair_slot + probe) & (ISH_PROFILE_HOST_PAIR_BUCKETS - 1);
+        uint64_t state = atomic_load_explicit(&prof_host_pairs[i].state,
+                                              memory_order_acquire);
+        if (state == 2 &&
+            atomic_load_explicit(&prof_host_pairs[i].pc_bucket, memory_order_relaxed) ==
+                bucket &&
+            atomic_load_explicit(&prof_host_pairs[i].lr_bucket, memory_order_relaxed) ==
+                lr_bucket) {
+            atomic_fetch_add_explicit(&prof_host_pairs[i].samples, 1,
+                                      memory_order_relaxed);
+            return;
+        }
+        if (state == 1) {
+            atomic_fetch_add_explicit(&prof_host_pair_dropped_samples, 1,
+                                      memory_order_relaxed);
+            return;
+        }
+        if (state != 0)
+            continue;
+
+        uint64_t empty = 0;
+        if (atomic_compare_exchange_strong_explicit(
+                &prof_host_pairs[i].state, &empty, 1,
+                memory_order_relaxed, memory_order_relaxed)) {
+            atomic_store_explicit(&prof_host_pairs[i].pc_bucket, bucket,
+                                  memory_order_relaxed);
+            atomic_store_explicit(&prof_host_pairs[i].lr_bucket, lr_bucket,
+                                  memory_order_relaxed);
+            atomic_store_explicit(&prof_host_pairs[i].samples, 1,
+                                  memory_order_relaxed);
+            atomic_store_explicit(&prof_host_pairs[i].state, 2,
+                                  memory_order_release);
             return;
         }
     }
-    atomic_fetch_add_explicit(&prof_host_pc_dropped_samples, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&prof_host_pair_dropped_samples, 1, memory_order_relaxed);
 }
 
 void ish_profile_add_dispatch(uint64_t ticks) {
@@ -363,6 +427,37 @@ static size_t profile_append(char *buf, size_t size, size_t used, const char *fo
     return (size_t) n >= size - used ? size - 1 : used + (size_t) n;
 }
 
+static void profile_host_pc_label(char *buf, size_t size, uintptr_t pc) {
+    bool translated = false;
+#ifdef ISH_JIT
+    translated = jit_host_pc_is_translated(pc);
+    uint64_t jit_offset;
+    if (translated && jit_host_pc_offset(pc, &jit_offset)) {
+        snprintf(buf, size, "translated+0x%llx",
+                 (unsigned long long) (jit_offset &
+                     ~((UINT64_C(1) << ISH_PROFILE_HOST_PC_SHIFT) - 1)));
+        return;
+    }
+#endif
+#if defined(__APPLE__)
+    Dl_info image;
+    if (dladdr((void *) pc, &image) != 0 && image.dli_fname && image.dli_fbase) {
+        const char *name = strrchr(image.dli_fname, '/');
+        name = name ? name + 1 : image.dli_fname;
+        if (image.dli_sname && image.dli_saddr) {
+            snprintf(buf, size, "%s!%s+0x%llx", name, image.dli_sname,
+                     (unsigned long long) (pc - (uintptr_t) image.dli_saddr));
+        } else {
+            snprintf(buf, size, "%s+0x%llx", name,
+                     (unsigned long long) (pc - (uintptr_t) image.dli_fbase));
+        }
+        return;
+    }
+#endif
+    snprintf(buf, size, "%s host PC 0x%llx", translated ? "AOT" : "native",
+             (unsigned long long) pc);
+}
+
 int ish_profile_control(const char *cmd, size_t len) {
     while (len && (cmd[len - 1] == '\n' || cmd[len - 1] == '\r' || cmd[len - 1] == ' '))
         len--;
@@ -406,6 +501,11 @@ size_t ish_profile_describe(char *buf, size_t size) {
         uint64_t pc_bucket;
         uint64_t samples;
     } top_host_pc[ISH_PROFILE_SYSCALL_TOP] = {};
+    struct {
+        uint64_t pc_bucket;
+        uint64_t lr_bucket;
+        uint64_t samples;
+    } top_host_pair[ISH_PROFILE_SYSCALL_TOP] = {};
     struct {
         unsigned syscall_num;
         uint64_t calls;
@@ -464,6 +564,27 @@ size_t ish_profile_describe(char *buf, size_t size) {
             atomic_load_explicit(&prof_host_pc[i].pc_bucket, memory_order_relaxed);
         top_host_pc[pos].samples = samples;
     }
+    for (unsigned i = 0; i < ISH_PROFILE_HOST_PAIR_BUCKETS; i++) {
+        if (atomic_load_explicit(&prof_host_pairs[i].state, memory_order_acquire) != 2)
+            continue;
+        uint64_t pc_bucket = atomic_load_explicit(&prof_host_pairs[i].pc_bucket,
+                                                  memory_order_relaxed);
+        uint64_t samples = atomic_load_explicit(&prof_host_pairs[i].samples,
+                                                memory_order_relaxed);
+        if (samples == 0)
+            continue;
+        unsigned pos = ISH_PROFILE_SYSCALL_TOP;
+        while (pos > 0 && samples > top_host_pair[pos - 1].samples)
+            pos--;
+        if (pos == ISH_PROFILE_SYSCALL_TOP)
+            continue;
+        for (unsigned j = ISH_PROFILE_SYSCALL_TOP - 1; j > pos; j--)
+            top_host_pair[j] = top_host_pair[j - 1];
+        top_host_pair[pos].pc_bucket = pc_bucket;
+        top_host_pair[pos].lr_bucket =
+            atomic_load_explicit(&prof_host_pairs[i].lr_bucket, memory_order_relaxed);
+        top_host_pair[pos].samples = samples;
+    }
     int n = snprintf(buf, size,
         "state: %s\n"
         "guest engine (inclusive): %.3f ms\n"
@@ -497,12 +618,14 @@ size_t ish_profile_describe(char *buf, size_t size) {
         atomic_load_explicit(&prof_host_pc_native_samples, memory_order_relaxed);
 #if ISH_PROFILE_HOST_PC_SAMPLER
     used = profile_append(buf, size, used,
-                          "host PC samples (SIGPROF, 1 ms; only while fiber_enter is active): %llu total, %llu translated-code, %llu native/helper, %llu dropped\n",
+                          "host PC samples (SIGPROF, 1 ms; only while fiber_enter is active): %llu total, %llu translated-code, %llu native/helper, %llu PC buckets dropped, %llu caller pairs dropped\n",
                           (unsigned long long) (host_translated_samples + host_native_samples),
                           (unsigned long long) host_translated_samples,
                           (unsigned long long) host_native_samples,
                           (unsigned long long) atomic_load_explicit(
-                              &prof_host_pc_dropped_samples, memory_order_relaxed));
+                              &prof_host_pc_dropped_samples, memory_order_relaxed),
+                          (unsigned long long) atomic_load_explicit(
+                              &prof_host_pair_dropped_samples, memory_order_relaxed));
 #else
     used = profile_append(buf, size, used, "host PC samples: unsupported on this platform\n");
 #endif
@@ -513,36 +636,23 @@ size_t ish_profile_describe(char *buf, size_t size) {
         used = profile_append(buf, size, used, "  hottest host PC buckets (256-byte, sample count):\n");
     for (unsigned i = 0; i < ISH_PROFILE_SYSCALL_TOP && top_host_pc[i].samples != 0; i++) {
         uintptr_t pc = (uintptr_t) top_host_pc[i].pc_bucket;
-        bool translated = false;
-#ifdef ISH_JIT
-        translated = jit_host_pc_is_translated(pc);
-#endif
-#ifdef ISH_JIT
-        uint64_t jit_offset;
-        if (translated && jit_host_pc_offset(pc, &jit_offset)) {
-            used = profile_append(buf, size, used, "    translated code+0x%llx: %llu\n",
-                                  (unsigned long long) (jit_offset &
-                                      ~((UINT64_C(1) << ISH_PROFILE_HOST_PC_SHIFT) - 1)),
-                                  (unsigned long long) top_host_pc[i].samples);
-            continue;
-        }
-#endif
-#if defined(__APPLE__)
-        Dl_info image;
-        if (!translated && dladdr((void *) pc, &image) != 0 && image.dli_fname &&
-            image.dli_fbase) {
-            const char *name = strrchr(image.dli_fname, '/');
-            used = profile_append(buf, size, used, "    %s+0x%llx: %llu\n",
-                                  name ? name + 1 : image.dli_fname,
-                                  (unsigned long long) (pc - (uintptr_t) image.dli_fbase),
-                                  (unsigned long long) top_host_pc[i].samples);
-            continue;
-        }
-#endif
-        used = profile_append(buf, size, used, "    %s host PC 0x%llx: %llu\n",
-                              translated ? "AOT" : "native",
-                              (unsigned long long) pc,
+        char pc_label[192];
+        profile_host_pc_label(pc_label, sizeof(pc_label), pc);
+        used = profile_append(buf, size, used, "    %s: %llu\n", pc_label,
                               (unsigned long long) top_host_pc[i].samples);
+    }
+    if (top_host_pair[0].samples != 0)
+        used = profile_append(buf, size, used,
+                              "  hottest host PC -> link-register caller pairs (256-byte buckets):\n");
+    for (unsigned i = 0; i < ISH_PROFILE_SYSCALL_TOP && top_host_pair[i].samples != 0; i++) {
+        char pc_label[192], lr_label[192];
+        profile_host_pc_label(pc_label, sizeof(pc_label),
+                              (uintptr_t) top_host_pair[i].pc_bucket);
+        profile_host_pc_label(lr_label, sizeof(lr_label),
+                              (uintptr_t) top_host_pair[i].lr_bucket);
+        used = profile_append(buf, size, used, "    %s <- %s: %llu\n",
+                              pc_label, lr_label,
+                              (unsigned long long) top_host_pair[i].samples);
     }
     if (guest_cpu_samples != 0)
         used = profile_append(buf, size, used,

@@ -20,7 +20,7 @@ void ish_profile_add_syscall(unsigned syscall_num, uint64_t wall_ticks,
                              uint64_t thread_cpu_ns, bool thread_cpu_available);
 void ish_profile_add_jit_decode(uint64_t ticks);
 void ish_profile_add_jit_translate(uint64_t ticks);
-void ish_profile_record_host_pc(uintptr_t pc, bool translated);
+void ish_profile_record_host_pc(uintptr_t pc, uintptr_t lr, bool translated);
 int ish_profile_host_sampler_start(void);
 int ish_profile_host_sampler_stop(void);
 int ish_profile_control(const char *cmd, size_t len);
