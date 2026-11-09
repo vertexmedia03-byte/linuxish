@@ -213,12 +213,15 @@ Run it separately if Python function-level statistics are needed.
 
 `/proc/ish/profile` reports guest execution, gadget transfers, C-side TLB misses, dispatch, syscalls,
 and JIT decode/translation. Guest-engine time excluding measured gadget time is an estimate and still
-includes transitions. Gadget and TLB times are subsets of guest-engine time; JIT timings overlap
+includes transitions. It also samples thread CPU time around one in 256 `fiber_enter()` calls, which
+excludes time descheduled but includes translated guest code, gadgets, and runtime work; this is not
+a JIT-only measurement. Gadget and TLB times are subsets of guest-engine time; JIT timings overlap
 dispatch. Do not add these
 overlapping categories together. Syscall wall totals include time blocked in the kernel; a separate
 per-thread CPU clock excludes time asleep, and the report ranks syscall numbers by CPU time while
 also showing their call counts and wall time. Use that CPU ranking to find syscall work worth
-optimizing. Compare workload wall time without profiling.
+optimizing. The sampled CPU measurement adds clock-read overhead, so compare workload wall time
+without profiling.
 
 For a local CLI diagnostic build, add `-Dprofile=true` to the ARM64 Meson setup command.
 

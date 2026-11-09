@@ -803,6 +803,9 @@ static inline size_t fiber_cache_hash(addr_t ip) {
 
 static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
     struct asbestos *asbestos = cpu->mmu->asbestos;
+#ifdef ISH_PROFILE
+    static _Thread_local unsigned guest_cpu_sample_counter;
+#endif
 
     // Hold jetsam_lock read during JIT execution.
     // This prevents jetsam cleanup from freeing blocks while we're executing them.
@@ -1109,6 +1112,13 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
         jit_exec_ready();
 #endif
 #ifdef ISH_PROFILE
+        bool profile_guest_cpu_sample = false;
+        uint64_t profile_guest_cpu_start = 0;
+        if (profile_sample && ++guest_cpu_sample_counter == 256) {
+            guest_cpu_sample_counter = 0;
+            profile_guest_cpu_sample =
+                ish_profile_thread_cpu_time(&profile_guest_cpu_start);
+        }
         uint64_t profile_guest_start = 0;
         uint64_t profile_gadget_ticks = 0;
         uint64_t profile_gadget_calls = 0;
@@ -1121,6 +1131,12 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
 #endif
         interrupt = fiber_enter(block, frame, tlb);
 #ifdef ISH_PROFILE
+        if (profile_guest_cpu_sample) {
+            uint64_t profile_guest_cpu_end;
+            if (ish_profile_thread_cpu_time(&profile_guest_cpu_end) &&
+                profile_guest_cpu_end >= profile_guest_cpu_start)
+                ish_profile_add_guest_cpu(profile_guest_cpu_end - profile_guest_cpu_start);
+        }
         if (profile_sample) {
             uint64_t guest_insns = block && block->end_addr >= block->addr
                 ? (block->end_addr - block->addr) >> 2 : 0;

@@ -15,6 +15,8 @@ static _Atomic uint64_t prof_dispatch_ticks;
 static _Atomic uint64_t prof_guest_ticks;
 static _Atomic uint64_t prof_guest_blocks;
 static _Atomic uint64_t prof_guest_insns;
+static _Atomic uint64_t prof_guest_cpu_sample_ns;
+static _Atomic uint64_t prof_guest_cpu_samples;
 static _Atomic uint64_t prof_gadget_ticks;
 static _Atomic uint64_t prof_gadget_calls;
 static _Atomic uint64_t prof_tlb_ticks;
@@ -73,6 +75,8 @@ void ish_profile_reset(void) {
     atomic_store_explicit(&prof_guest_ticks, 0, memory_order_relaxed);
     atomic_store_explicit(&prof_guest_blocks, 0, memory_order_relaxed);
     atomic_store_explicit(&prof_guest_insns, 0, memory_order_relaxed);
+    atomic_store_explicit(&prof_guest_cpu_sample_ns, 0, memory_order_relaxed);
+    atomic_store_explicit(&prof_guest_cpu_samples, 0, memory_order_relaxed);
     atomic_store_explicit(&prof_gadget_ticks, 0, memory_order_relaxed);
     atomic_store_explicit(&prof_gadget_calls, 0, memory_order_relaxed);
     atomic_store_explicit(&prof_tlb_ticks, 0, memory_order_relaxed);
@@ -101,6 +105,11 @@ void ish_profile_add_guest(uint64_t ticks, uint64_t blocks, uint64_t insns,
     atomic_fetch_add_explicit(&prof_guest_insns, insns, memory_order_relaxed);
     atomic_fetch_add_explicit(&prof_gadget_ticks, gadget_ticks, memory_order_relaxed);
     atomic_fetch_add_explicit(&prof_gadget_calls, gadget_calls, memory_order_relaxed);
+}
+
+void ish_profile_add_guest_cpu(uint64_t sampled_ns) {
+    atomic_fetch_add_explicit(&prof_guest_cpu_sample_ns, sampled_ns, memory_order_relaxed);
+    atomic_fetch_add_explicit(&prof_guest_cpu_samples, 1, memory_order_relaxed);
 }
 
 void ish_profile_add_tlb_miss(uint64_t ticks) {
@@ -174,6 +183,10 @@ size_t ish_profile_describe(char *buf, size_t size) {
     uint64_t frequency = ish_profile_ticks_per_second();
     uint64_t guest_ticks = atomic_load_explicit(&prof_guest_ticks, memory_order_relaxed);
     uint64_t gadget_ticks = atomic_load_explicit(&prof_gadget_ticks, memory_order_relaxed);
+    uint64_t guest_cpu_sample_ns =
+        atomic_load_explicit(&prof_guest_cpu_sample_ns, memory_order_relaxed);
+    uint64_t guest_cpu_samples =
+        atomic_load_explicit(&prof_guest_cpu_samples, memory_order_relaxed);
     struct {
         unsigned syscall_num;
         uint64_t calls;
@@ -225,6 +238,14 @@ size_t ish_profile_describe(char *buf, size_t size) {
     if (n < 0)
         return 0;
     size_t used = (size_t) n < size ? (size_t) n : size - 1;
+    if (guest_cpu_samples != 0)
+        used = profile_append(buf, size, used,
+                              "fiber_enter thread CPU (sampled estimate, 1 in 256 entries): %.3f ms (%llu samples)\n",
+                              ticks_ms(guest_cpu_sample_ns * 256, 1000000000),
+                              (unsigned long long) guest_cpu_samples);
+    else
+        used = profile_append(buf, size, used,
+                              "fiber_enter thread CPU: unavailable (no samples or thread CPU clock unsupported)\n");
     bool has_cpu_profile = false;
     for (unsigned i = 0; i < ISH_PROFILE_SYSCALL_TOP && top[i].cpu_ns != 0; i++) {
         has_cpu_profile = true;
@@ -238,7 +259,7 @@ size_t ish_profile_describe(char *buf, size_t size) {
     used = profile_append(buf, size, used,
                           "JIT decode: %.3f ms\n"
                           "JIT translation/lookup: %.3f ms\n"
-                          "note: syscall wall time includes blocking; thread CPU time excludes sleeps. Gadget/TLB overlap guest; JIT overlaps dispatch.\n",
+                          "note: syscall wall time includes blocking; sampled fiber_enter thread CPU excludes descheduling and includes JIT/runtime/gadget work; sampling adds clock-read overhead. Gadget/TLB overlap guest; JIT overlaps dispatch.\n",
                           ticks_ms(atomic_load_explicit(&prof_jit_decode_ticks, memory_order_relaxed), frequency),
                           ticks_ms(atomic_load_explicit(&prof_jit_translate_ticks, memory_order_relaxed), frequency));
     return used;
