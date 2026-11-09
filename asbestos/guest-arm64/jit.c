@@ -787,25 +787,6 @@ static void tlb_lookup(struct em *e, unsigned bytes, bool write, unsigned spos) 
     // A translated host access may fault; keep guest state recoverable first.
     flush_dirty(e);
     e->hflags = false;   // the checks below use cmp
-#ifdef ISH_PROFILE
-    unsigned profile_skip_start = e->n;
-    put(e, 0xF9400000u | ((offsetof(struct cpu_state, profile_active) / 8) << 10) | (1u << 5) | T_P);
-    put(e, 0xB4000000u | T_P);  // cbz x8, skip profiling
-    put(e, 0xF9400000u | ((offsetof(struct cpu_state, profile_jit_tlb_lookups) / 8) << 10) |
-           (1u << 5) | T_P);
-    put(e, 0x91000000u | (1u << 10) | (T_P << 5) | T_P);  // add x8, x8, #1
-    put(e, 0xF9000000u | ((offsetof(struct cpu_state, profile_jit_tlb_lookups) / 8) << 10) |
-           (1u << 5) | T_P);
-    put(e, 0x12001C00u | (T_P << 5) | T_P);  // and w8, w8, #255
-    unsigned profile_skip_sample = e->n;
-    put(e, 0x35000000u | T_P);  // cbnz w8, skip sample
-    put(e, 0xD53BE040u | T_P);  // mrs x8, cntvct_el0
-    put(e, 0xF9000000u | ((offsetof(struct cpu_state, profile_jit_tlb_start) / 8) << 10) |
-           (1u << 5) | T_P);
-    unsigned profile_sample_start = e->n;
-    e->buf[profile_skip_start] |= (profile_sample_start - profile_skip_start) << 5;
-    e->buf[profile_skip_sample] |= (profile_sample_start - profile_skip_sample) << 5;
-#endif
     put(e, 0xCA400000u | (T_A << 16) | (13u << 10) | (T_A << 5) | T_I);  // eor x10, x9, x9, lsr #13
     put(e, 0xD3400000u | (12u << 16) | (24u << 10) | (T_I << 5) | T_I); // ubfx x10, x10, #12, #13
     put(e, 0x9240BC00u | (T_A << 5) | T_A);                    // and x9, x9, #0xffffffffffff
@@ -823,30 +804,6 @@ static void tlb_lookup(struct em *e, unsigned bytes, bool write, unsigned spos) 
     put(e, 0xCB000000u | (T_E << 16) | (T_Q << 5) | T_P);      // sub x8, x12, x11
     put(e, 0xF100001Fu | ((0x1000 - bytes) << 10) | (T_P << 5));   // cmp x8, #(0x1000-bytes)
     branch_stub(e, spos, 2);                                   // b.hi stub
-#ifdef ISH_PROFILE
-    put(e, 0xF9400000u | ((offsetof(struct cpu_state, profile_jit_tlb_start) / 8) << 10) |
-           (1u << 5) | T_P);
-    unsigned profile_skip_end = e->n;
-    put(e, 0xB4000000u | T_P);  // cbz x8, skip accumulation
-    put(e, 0xD53BE040u | T_P);  // mrs x8, cntvct_el0
-    put(e, 0xF9400000u | ((offsetof(struct cpu_state, profile_jit_tlb_start) / 8) << 10) |
-           (1u << 5) | T_Q);
-    put(e, 0xCB000000u | (T_Q << 16) | (T_P << 5) | T_P);  // sub x8, x8, x12
-    put(e, 0xF9400000u | ((offsetof(struct cpu_state, profile_jit_tlb_ticks) / 8) << 10) |
-           (1u << 5) | T_Q);
-    put(e, 0x8B000000u | (T_P << 16) | (T_Q << 5) | T_Q);  // add x12, x12, x8
-    put(e, 0xF9000000u | ((offsetof(struct cpu_state, profile_jit_tlb_ticks) / 8) << 10) |
-           (1u << 5) | T_Q);
-    put(e, 0xF9400000u | ((offsetof(struct cpu_state, profile_jit_tlb_samples) / 8) << 10) |
-           (1u << 5) | T_Q);
-    put(e, 0x91000000u | (1u << 10) | (T_Q << 5) | T_Q);  // add x12, x12, #1
-    put(e, 0xF9000000u | ((offsetof(struct cpu_state, profile_jit_tlb_samples) / 8) << 10) |
-           (1u << 5) | T_Q);
-    put(e, 0xF9000000u | ((offsetof(struct cpu_state, profile_jit_tlb_start) / 8) << 10) |
-           (1u << 5) | 31);  // str xzr, [x1, #profile_jit_tlb_start]
-    unsigned profile_after_sample = e->n;
-    e->buf[profile_skip_end] |= (profile_after_sample - profile_skip_end) << 5;
-#endif
     put(e, 0xF9400000u | ((offsetof(struct tlb_entry, data_minus_addr) / 8) << 10) | (T_I << 5) | T_E);  // ldr x11, [x10, #dma]
     put(e, 0x8B000000u | (T_A << 16) | (T_E << 5) | T_A);      // add x9, x11, x9
     if (cm_on && e->ntlb_ranges < sizeof(e->tlb_ranges) / sizeof(e->tlb_ranges[0])) {
@@ -2826,7 +2783,7 @@ void ish_aot_register(const struct aot_module *m) {
 
 // Bump whenever the code emitted for some guest instruction, stub or exit
 // changes: images made before would still pass every other check.
-#define JIT_CODE_VERSION 17
+#define JIT_CODE_VERSION 15
 
 // Everything the emitted code bakes in besides the gadgets it names: the
 // conventions, the struct layouts it loads from and the TLB / block cache
@@ -2841,11 +2798,6 @@ static uint32_t jit_abi(void) {
         offsetof(struct cpu_state, profile_gadget_start),
         offsetof(struct cpu_state, profile_gadget_ticks),
         offsetof(struct cpu_state, profile_gadget_calls),
-        offsetof(struct cpu_state, profile_active),
-        offsetof(struct cpu_state, profile_jit_tlb_start),
-        offsetof(struct cpu_state, profile_jit_tlb_lookups),
-        offsetof(struct cpu_state, profile_jit_tlb_samples),
-        offsetof(struct cpu_state, profile_jit_tlb_ticks),
         CPU_pc, CPU_cycle, CPU_poked_ptr, CPU_tls_ptr, offsetof(struct cpu_state, sp),
         offsetof(struct cpu_state, regs), offsetof(struct cpu_state, nzcv), offsetof(struct cpu_state, fp),
         LOCAL_last_block, LOCAL_ret_cache,

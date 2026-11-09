@@ -28,9 +28,6 @@ static _Atomic uint64_t prof_syscall_cpu_samples;
 static _Atomic uint64_t prof_syscall_cpu_ns_by_num[ISH_PROFILE_SYSCALL_MAX];
 static _Atomic uint64_t prof_jit_decode_ticks;
 static _Atomic uint64_t prof_jit_translate_ticks;
-static _Atomic uint64_t prof_jit_tlb_lookups;
-static _Atomic uint64_t prof_jit_tlb_samples;
-static _Atomic uint64_t prof_jit_tlb_sample_ticks;
 
 bool ish_profile_active(void) {
     return atomic_load_explicit(&ish_profile_enabled, memory_order_relaxed) != 0;
@@ -91,9 +88,6 @@ void ish_profile_reset(void) {
     }
     atomic_store_explicit(&prof_jit_decode_ticks, 0, memory_order_relaxed);
     atomic_store_explicit(&prof_jit_translate_ticks, 0, memory_order_relaxed);
-    atomic_store_explicit(&prof_jit_tlb_lookups, 0, memory_order_relaxed);
-    atomic_store_explicit(&prof_jit_tlb_samples, 0, memory_order_relaxed);
-    atomic_store_explicit(&prof_jit_tlb_sample_ticks, 0, memory_order_relaxed);
 }
 
 void ish_profile_add_dispatch(uint64_t ticks) {
@@ -139,12 +133,6 @@ void ish_profile_add_jit_translate(uint64_t ticks) {
     atomic_fetch_add_explicit(&prof_jit_translate_ticks, ticks, memory_order_relaxed);
 }
 
-void ish_profile_add_jit_tlb(uint64_t lookups, uint64_t samples, uint64_t sample_ticks) {
-    atomic_fetch_add_explicit(&prof_jit_tlb_lookups, lookups, memory_order_relaxed);
-    atomic_fetch_add_explicit(&prof_jit_tlb_samples, samples, memory_order_relaxed);
-    atomic_fetch_add_explicit(&prof_jit_tlb_sample_ticks, sample_ticks, memory_order_relaxed);
-}
-
 static double ticks_ms(uint64_t ticks, uint64_t frequency) {
     return frequency ? (double) ticks * 1000.0 / (double) frequency : 0;
 }
@@ -186,13 +174,6 @@ size_t ish_profile_describe(char *buf, size_t size) {
     uint64_t frequency = ish_profile_ticks_per_second();
     uint64_t guest_ticks = atomic_load_explicit(&prof_guest_ticks, memory_order_relaxed);
     uint64_t gadget_ticks = atomic_load_explicit(&prof_gadget_ticks, memory_order_relaxed);
-    uint64_t tlb_lookups = atomic_load_explicit(&prof_jit_tlb_lookups, memory_order_relaxed);
-    uint64_t tlb_samples = atomic_load_explicit(&prof_jit_tlb_samples, memory_order_relaxed);
-    uint64_t tlb_sample_ticks = atomic_load_explicit(&prof_jit_tlb_sample_ticks, memory_order_relaxed);
-    double tlb_estimated_ms = tlb_samples && frequency
-        ? (double) tlb_sample_ticks * (double) tlb_lookups * 1000.0 /
-          ((double) tlb_samples * (double) frequency)
-        : 0;
     struct {
         unsigned syscall_num;
         uint64_t calls;
@@ -223,7 +204,6 @@ size_t ish_profile_describe(char *buf, size_t size) {
         "guest engine excluding measured gadgets (estimate): %.3f ms\n"
         "  fiber entries: %llu, dispatched-block instructions (estimate): %llu\n"
         "gadgets (subset of guest engine): %.3f ms, %llu transfers\n"
-        "inline JIT TLB lookups: %llu; sampled: %llu (1 in 256), estimated check time: %.3f ms\n"
         "dispatch before guest execution: %.3f ms\n"
         "TLB miss handling (subset of guest engine): %.3f ms, %llu misses\n"
         "syscalls: wall sum %.3f ms across threads; thread CPU %.3f ms (%llu/%llu calls timed)\n"
@@ -235,9 +215,6 @@ size_t ish_profile_describe(char *buf, size_t size) {
         (unsigned long long) atomic_load_explicit(&prof_guest_insns, memory_order_relaxed),
         ticks_ms(gadget_ticks, frequency),
         (unsigned long long) atomic_load_explicit(&prof_gadget_calls, memory_order_relaxed),
-        (unsigned long long) tlb_lookups,
-        (unsigned long long) tlb_samples,
-        tlb_estimated_ms,
         ticks_ms(atomic_load_explicit(&prof_dispatch_ticks, memory_order_relaxed), frequency),
         ticks_ms(atomic_load_explicit(&prof_tlb_ticks, memory_order_relaxed), frequency),
         (unsigned long long) atomic_load_explicit(&prof_tlb_misses, memory_order_relaxed),
@@ -261,7 +238,7 @@ size_t ish_profile_describe(char *buf, size_t size) {
     used = profile_append(buf, size, used,
                           "JIT decode: %.3f ms\n"
                           "JIT translation/lookup: %.3f ms\n"
-                          "note: syscall wall time includes blocking; thread CPU time excludes sleeps. TLB check time is sampled and scaled; instrumentation adds overhead. Gadget/TLB overlap guest; JIT overlaps dispatch.\n",
+                          "note: syscall wall time includes blocking; thread CPU time excludes sleeps. Gadget/TLB overlap guest; JIT overlaps dispatch.\n",
                           ticks_ms(atomic_load_explicit(&prof_jit_decode_ticks, memory_order_relaxed), frequency),
                           ticks_ms(atomic_load_explicit(&prof_jit_translate_ticks, memory_order_relaxed), frequency));
     return used;

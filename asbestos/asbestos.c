@@ -1112,32 +1112,21 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
         uint64_t profile_guest_start = 0;
         uint64_t profile_gadget_ticks = 0;
         uint64_t profile_gadget_calls = 0;
-        uint64_t profile_jit_tlb_lookups = 0;
-        uint64_t profile_jit_tlb_samples = 0;
-        uint64_t profile_jit_tlb_ticks = 0;
         if (profile_sample) {
             ish_profile_add_dispatch(ish_profile_ticks() - profile_dispatch_start);
             profile_guest_start = ish_profile_ticks();
             profile_gadget_ticks = frame->cpu.profile_gadget_ticks;
             profile_gadget_calls = frame->cpu.profile_gadget_calls;
-            profile_jit_tlb_lookups = frame->cpu.profile_jit_tlb_lookups;
-            profile_jit_tlb_samples = frame->cpu.profile_jit_tlb_samples;
-            profile_jit_tlb_ticks = frame->cpu.profile_jit_tlb_ticks;
         }
-        frame->cpu.profile_active = profile_sample;
 #endif
         interrupt = fiber_enter(block, frame, tlb);
 #ifdef ISH_PROFILE
-        frame->cpu.profile_active = 0;
         if (profile_sample) {
             uint64_t guest_insns = block && block->end_addr >= block->addr
                 ? (block->end_addr - block->addr) >> 2 : 0;
             ish_profile_add_guest(ish_profile_ticks() - profile_guest_start, 1, guest_insns,
                                   frame->cpu.profile_gadget_ticks - profile_gadget_ticks,
                                   frame->cpu.profile_gadget_calls - profile_gadget_calls);
-            ish_profile_add_jit_tlb(frame->cpu.profile_jit_tlb_lookups - profile_jit_tlb_lookups,
-                                    frame->cpu.profile_jit_tlb_samples - profile_jit_tlb_samples,
-                                    frame->cpu.profile_jit_tlb_ticks - profile_jit_tlb_ticks);
         }
 #endif
         in_jit = 0;
