@@ -1135,7 +1135,8 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
             uint64_t profile_guest_cpu_end;
             if (ish_profile_thread_cpu_time(&profile_guest_cpu_end) &&
                 profile_guest_cpu_end >= profile_guest_cpu_start)
-                ish_profile_add_guest_cpu(profile_guest_cpu_end - profile_guest_cpu_start);
+                ish_profile_add_guest_cpu(block->addr,
+                                          profile_guest_cpu_end - profile_guest_cpu_start);
         }
         if (profile_sample) {
             uint64_t guest_insns = block && block->end_addr >= block->addr

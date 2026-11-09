@@ -215,8 +215,10 @@ Run it separately if Python function-level statistics are needed.
 and JIT decode/translation. Guest-engine time excluding measured gadget time is an estimate and still
 includes transitions. It also samples thread CPU time around one in 256 `fiber_enter()` calls, which
 excludes time descheduled but includes translated guest code, gadgets, and runtime work; this is not
-a JIT-only measurement. Gadget and TLB times are subsets of guest-engine time; JIT timings overlap
-dispatch. Do not add these
+a JIT-only measurement. The hottest guest PC ranges are shown in 256-byte buckets, attributed to the
+block entered for each sampled call; chained execution and runtime work can make that attribution
+approximate. Gadget and TLB times are subsets of guest-engine time; JIT timings overlap dispatch.
+Do not add these
 overlapping categories together. Syscall wall totals include time blocked in the kernel; a separate
 per-thread CPU clock excludes time asleep, and the report ranks syscall numbers by CPU time while
 also showing their call counts and wall time. Use that CPU ranking to find syscall work worth

@@ -13,7 +13,7 @@ void ish_profile_reset(void);
 void ish_profile_add_dispatch(uint64_t ticks);
 void ish_profile_add_guest(uint64_t ticks, uint64_t blocks, uint64_t insns,
                            uint64_t gadget_ticks, uint64_t gadget_calls);
-void ish_profile_add_guest_cpu(uint64_t sampled_ns);
+void ish_profile_add_guest_cpu(uint64_t guest_pc, uint64_t sampled_ns);
 void ish_profile_add_tlb_miss(uint64_t ticks);
 void ish_profile_add_syscall(unsigned syscall_num, uint64_t wall_ticks,
                              uint64_t thread_cpu_ns, bool thread_cpu_available);

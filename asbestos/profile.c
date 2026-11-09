@@ -8,6 +8,9 @@
 
 #define ISH_PROFILE_SYSCALL_MAX 512
 #define ISH_PROFILE_SYSCALL_TOP 8
+#define ISH_PROFILE_GUEST_PC_BUCKETS 4096
+#define ISH_PROFILE_GUEST_PC_PROBES 16
+#define ISH_PROFILE_GUEST_PC_SHIFT 8
 
 _Atomic unsigned char ish_profile_enabled;
 
@@ -17,6 +20,12 @@ static _Atomic uint64_t prof_guest_blocks;
 static _Atomic uint64_t prof_guest_insns;
 static _Atomic uint64_t prof_guest_cpu_sample_ns;
 static _Atomic uint64_t prof_guest_cpu_samples;
+static _Atomic uint64_t prof_guest_cpu_dropped_samples;
+static struct {
+    _Atomic uint64_t pc_bucket;
+    _Atomic uint64_t sample_ns;
+    _Atomic uint64_t samples;
+} prof_guest_pc[ISH_PROFILE_GUEST_PC_BUCKETS];
 static _Atomic uint64_t prof_gadget_ticks;
 static _Atomic uint64_t prof_gadget_calls;
 static _Atomic uint64_t prof_tlb_ticks;
@@ -77,6 +86,12 @@ void ish_profile_reset(void) {
     atomic_store_explicit(&prof_guest_insns, 0, memory_order_relaxed);
     atomic_store_explicit(&prof_guest_cpu_sample_ns, 0, memory_order_relaxed);
     atomic_store_explicit(&prof_guest_cpu_samples, 0, memory_order_relaxed);
+    atomic_store_explicit(&prof_guest_cpu_dropped_samples, 0, memory_order_relaxed);
+    for (unsigned i = 0; i < ISH_PROFILE_GUEST_PC_BUCKETS; i++) {
+        atomic_store_explicit(&prof_guest_pc[i].pc_bucket, 0, memory_order_relaxed);
+        atomic_store_explicit(&prof_guest_pc[i].sample_ns, 0, memory_order_relaxed);
+        atomic_store_explicit(&prof_guest_pc[i].samples, 0, memory_order_relaxed);
+    }
     atomic_store_explicit(&prof_gadget_ticks, 0, memory_order_relaxed);
     atomic_store_explicit(&prof_gadget_calls, 0, memory_order_relaxed);
     atomic_store_explicit(&prof_tlb_ticks, 0, memory_order_relaxed);
@@ -107,9 +122,26 @@ void ish_profile_add_guest(uint64_t ticks, uint64_t blocks, uint64_t insns,
     atomic_fetch_add_explicit(&prof_gadget_calls, gadget_calls, memory_order_relaxed);
 }
 
-void ish_profile_add_guest_cpu(uint64_t sampled_ns) {
+void ish_profile_add_guest_cpu(uint64_t guest_pc, uint64_t sampled_ns) {
     atomic_fetch_add_explicit(&prof_guest_cpu_sample_ns, sampled_ns, memory_order_relaxed);
     atomic_fetch_add_explicit(&prof_guest_cpu_samples, 1, memory_order_relaxed);
+    uint64_t key = (guest_pc >> ISH_PROFILE_GUEST_PC_SHIFT) + 1;
+    unsigned slot = (unsigned) ((key * UINT64_C(11400714819323198485)) >>
+                                (64 - 12));
+    for (unsigned probe = 0; probe < ISH_PROFILE_GUEST_PC_PROBES; probe++) {
+        unsigned i = (slot + probe) & (ISH_PROFILE_GUEST_PC_BUCKETS - 1);
+        uint64_t found = atomic_load_explicit(&prof_guest_pc[i].pc_bucket, memory_order_relaxed);
+        if (found == key ||
+            (found == 0 && atomic_compare_exchange_strong_explicit(
+                &prof_guest_pc[i].pc_bucket, &found, key,
+                memory_order_relaxed, memory_order_relaxed))) {
+            atomic_fetch_add_explicit(&prof_guest_pc[i].sample_ns, sampled_ns,
+                                      memory_order_relaxed);
+            atomic_fetch_add_explicit(&prof_guest_pc[i].samples, 1, memory_order_relaxed);
+            return;
+        }
+    }
+    atomic_fetch_add_explicit(&prof_guest_cpu_dropped_samples, 1, memory_order_relaxed);
 }
 
 void ish_profile_add_tlb_miss(uint64_t ticks) {
@@ -188,6 +220,11 @@ size_t ish_profile_describe(char *buf, size_t size) {
     uint64_t guest_cpu_samples =
         atomic_load_explicit(&prof_guest_cpu_samples, memory_order_relaxed);
     struct {
+        uint64_t pc_bucket;
+        uint64_t sample_ns;
+        uint64_t samples;
+    } top_guest_pc[ISH_PROFILE_SYSCALL_TOP] = {};
+    struct {
         unsigned syscall_num;
         uint64_t calls;
         uint64_t cpu_ns;
@@ -210,6 +247,24 @@ size_t ish_profile_describe(char *buf, size_t size) {
         top[pos].cpu_ns = cpu_ns;
         top[pos].wall_ticks = atomic_load_explicit(&prof_syscall_ticks_by_num[syscall_num],
                                                    memory_order_relaxed);
+    }
+    for (unsigned i = 0; i < ISH_PROFILE_GUEST_PC_BUCKETS; i++) {
+        uint64_t sample_ns = atomic_load_explicit(&prof_guest_pc[i].sample_ns,
+                                                  memory_order_relaxed);
+        if (sample_ns == 0)
+            continue;
+        unsigned pos = ISH_PROFILE_SYSCALL_TOP;
+        while (pos > 0 && sample_ns > top_guest_pc[pos - 1].sample_ns)
+            pos--;
+        if (pos == ISH_PROFILE_SYSCALL_TOP)
+            continue;
+        for (unsigned j = ISH_PROFILE_SYSCALL_TOP - 1; j > pos; j--)
+            top_guest_pc[j] = top_guest_pc[j - 1];
+        top_guest_pc[pos].pc_bucket =
+            atomic_load_explicit(&prof_guest_pc[i].pc_bucket, memory_order_relaxed) - 1;
+        top_guest_pc[pos].sample_ns = sample_ns;
+        top_guest_pc[pos].samples =
+            atomic_load_explicit(&prof_guest_pc[i].samples, memory_order_relaxed);
     }
     int n = snprintf(buf, size,
         "state: %s\n"
@@ -240,12 +295,24 @@ size_t ish_profile_describe(char *buf, size_t size) {
     size_t used = (size_t) n < size ? (size_t) n : size - 1;
     if (guest_cpu_samples != 0)
         used = profile_append(buf, size, used,
-                              "fiber_enter thread CPU (sampled estimate, 1 in 256 entries): %.3f ms (%llu samples)\n",
+                              "fiber_enter thread CPU (sampled estimate, 1 in 256 entries): %.3f ms (%llu samples, %llu dropped by PC table)\n",
                               ticks_ms(guest_cpu_sample_ns * 256, 1000000000),
-                              (unsigned long long) guest_cpu_samples);
+                              (unsigned long long) guest_cpu_samples,
+                              (unsigned long long) atomic_load_explicit(
+                                  &prof_guest_cpu_dropped_samples, memory_order_relaxed));
     else
         used = profile_append(buf, size, used,
                               "fiber_enter thread CPU: unavailable (no samples or thread CPU clock unsupported)\n");
+    if (guest_cpu_samples != 0) {
+        used = profile_append(buf, size, used,
+                              "  hottest guest PC ranges (256-byte buckets; estimated CPU ms, samples):\n");
+        for (unsigned i = 0; i < ISH_PROFILE_SYSCALL_TOP && top_guest_pc[i].samples != 0; i++)
+            used = profile_append(buf, size, used, "    0x%llx: %.3f ms, %llu\n",
+                                  (unsigned long long) (top_guest_pc[i].pc_bucket <<
+                                                        ISH_PROFILE_GUEST_PC_SHIFT),
+                                  ticks_ms(top_guest_pc[i].sample_ns * 256, 1000000000),
+                                  (unsigned long long) top_guest_pc[i].samples);
+    }
     bool has_cpu_profile = false;
     for (unsigned i = 0; i < ISH_PROFILE_SYSCALL_TOP && top[i].cpu_ns != 0; i++) {
         has_cpu_profile = true;
