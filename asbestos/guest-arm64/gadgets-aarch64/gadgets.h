@@ -64,10 +64,45 @@ _addr   .req x7    // Changed from x3/x4 to x7 to avoid conflict with guest low 
 
 .extern fiber_exit
 
+#ifdef ISH_PROFILE
+.macro profile_gadget_start
+    adrp x9, NAME(ish_profile_enabled)@PAGE
+    ldrb w9, [x9, NAME(ish_profile_enabled)@PAGEOFF]
+    cbz w9, 9f
+    mrs x9, cntvct_el0
+    str x9, [_cpu, #CPU_profile_gadget_start]
+9:
+.endm
+
+.macro profile_gadget_end
+    adrp x9, NAME(ish_profile_enabled)@PAGE
+    ldrb w9, [x9, NAME(ish_profile_enabled)@PAGEOFF]
+    cbz w9, 8f
+    mrs x9, cntvct_el0
+    ldr x10, [_cpu, #CPU_profile_gadget_start]
+    cbz x10, 8f
+    sub x9, x9, x10
+    ldr x10, [_cpu, #CPU_profile_gadget_ticks]
+    add x10, x10, x9
+    str x10, [_cpu, #CPU_profile_gadget_ticks]
+    ldr x10, [_cpu, #CPU_profile_gadget_calls]
+    add x10, x10, #1
+    str x10, [_cpu, #CPU_profile_gadget_calls]
+8:
+    str xzr, [_cpu, #CPU_profile_gadget_start]
+.endm
+#else
+.macro profile_gadget_start
+.endm
+.macro profile_gadget_end
+.endm
+#endif
+
 .macro .gadget name
     .global NAME(gadget_\()\name)
     .align 4
     NAME(gadget_\()\name) :
+    profile_gadget_start
 .endm
 
 .macro gret pop=0
@@ -77,6 +112,7 @@ _addr   .req x7    // Changed from x3/x4 to x7 to avoid conflict with guest low 
     ldr x8, [_pc, \pop*8]!
     add _pc, _pc, 8
 .endif
+    profile_gadget_end
 #ifdef ISH_GADGET_PROFILE
     // Profile: append next-gadget pointer to a ring buffer indexed by g_profile_idx.
     // Single-threaded JIT path, no atomic needed. Caller must ensure x9-x12 free

@@ -8,6 +8,9 @@
 #include "asbestos/asbestos.h"
 #include "asbestos/gen.h"
 #include "asbestos/frame.h"
+#ifdef ISH_PROFILE
+#include "asbestos/profile.h"
+#endif
 #ifdef ISH_JIT
 #include "asbestos/guest-arm64/jit.h"
 #endif
@@ -838,6 +841,10 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
     int interrupt = INT_NONE;
     int crash_retry_count = 0;
     while (interrupt == INT_NONE) {
+#ifdef ISH_PROFILE
+        bool profile_sample = ish_profile_active();
+        uint64_t profile_dispatch_start = profile_sample ? ish_profile_ticks() : 0;
+#endif
         // Check if blocks were invalidated since last check (e.g. CoW by another thread).
         // This must be inside the loop, not just at function entry, because invalidation
         // can happen while we're in the JIT cycle (between fiber_enter calls).
@@ -1101,7 +1108,27 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
 #ifdef ISH_JIT
         jit_exec_ready();
 #endif
+#ifdef ISH_PROFILE
+        uint64_t profile_guest_start = 0;
+        uint64_t profile_gadget_ticks = 0;
+        uint64_t profile_gadget_calls = 0;
+        if (profile_sample) {
+            ish_profile_add_dispatch(ish_profile_ticks() - profile_dispatch_start);
+            profile_guest_start = ish_profile_ticks();
+            profile_gadget_ticks = frame->cpu.profile_gadget_ticks;
+            profile_gadget_calls = frame->cpu.profile_gadget_calls;
+        }
+#endif
         interrupt = fiber_enter(block, frame, tlb);
+#ifdef ISH_PROFILE
+        if (profile_sample) {
+            uint64_t guest_insns = block && block->end_addr >= block->addr
+                ? (block->end_addr - block->addr) >> 2 : 0;
+            ish_profile_add_guest(ish_profile_ticks() - profile_guest_start, 1, guest_insns,
+                                  frame->cpu.profile_gadget_ticks - profile_gadget_ticks,
+                                  frame->cpu.profile_gadget_calls - profile_gadget_calls);
+        }
+#endif
         in_jit = 0;
         jit_frame = NULL;
 #ifdef GUEST_ARM64

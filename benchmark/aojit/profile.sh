@@ -28,12 +28,12 @@ echo "⏱  $w: wall time, best of 2"
 wall "AOT on" "$aot"
 wall "AOT off (ISH_JIT=0)" ISH_JIT=0 "$aot"
 wall "all native (JIT, PIC)" ISH_JIT_PIC=1 "$jit"
-echo "🧮 translations per module and CPU per module (JIT build, sampled for ${DUR:-12}s)"
+echo "🧮 translated modules and CPU breakdown (JIT build, sampled for ${DUR:-12}s)"
 rm -f "$out/map.txt"
 ISH_JIT_PIC=1 ISH_JIT_MAP="$out/map.txt" "$jit" "$fs" "$rootfs" /usr/bin/env AOJIT_SSH="${AOJIT_SSH:-}" \
     /bin/sh -c "$cmd; sleep $(( ${DUR:-12} + 3 ))" < /dev/null > /dev/null 2>&1 & pid=$!
 sleep 0.2; sample $pid "${DUR:-12}" 1 -file "$out/sample.txt" > /dev/null 2>&1
 wait $pid
 awk '$1 == "M" {printf "  %8d blocks %8d units %10d B  %s\n", $3, $4, $6, $7}' "$out/map.txt" | sort -rn | head -20
-python3 "$here/../../tools/jit_aot/attrib.py" "$out/sample.txt" "$out/map.txt" --top-ish 10
+python3 "$here/../../tools/jit_aot/attrib.py" "$out/sample.txt" "$out/map.txt" --top-ish 20
 [ -n "${OUT:-}" ] && echo "📄 $out/{map,sample}.txt" || rm -rf "$out"

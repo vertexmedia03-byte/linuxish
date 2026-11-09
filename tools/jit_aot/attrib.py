@@ -4,7 +4,8 @@
 Input: a macOS `sample <pid> <seconds> 1 -file <sample.txt>` of an ish run with
 ISH_JIT_MAP=<map.txt> (the map is written when ish exits). Native code samples are looked up in
 the map's segments (S lines) and counted for their module (M lines); the rest is split into
-gadgets, ish's translation work, the ish kernel/runtime and host libraries. Threads that wait
+gadgets, memory/TLB emulation, dispatch/transition overhead, translation work, kernel/runtime and
+host libraries. Threads that wait
 (condition variables, sleeps, kevent/poll, blocking reads) are counted apart and left out of the
 percentages. Without a map (a pure-AOT build), AOT code shows as "native (unmapped)".
 
@@ -22,11 +23,17 @@ IDLE_IO = re.compile(r'^(read|poll|recvfrom) +\(in libsystem_kernel')     # bloc
 TRANSLATE = re.compile(r'^(gen_|gen\b|jit_translate|jit_compile|jit_emit|emit_|jit_install|translate|'
                        r'fiber_block_new|fiber_compile|jit_block_new|decode_|jit_segment|install_code|'
                        r'region_alloc|reg_|aot_)')
+MEMORY = re.compile(r'^(tlb_handle_miss|tlb_flush|__tlb_|c_(load|store)|mem_ptr|mem_mmu_translate|'
+                    r'mmu_translate|mem_pt\b|mem_changed)')
+DISPATCH = re.compile(r'^(fiber_enter|fiber_ret|fiber_exit|fiber_block|fiber_lookup|fiber_insert|'
+                      r'fiber_cache_hash|cpu_step_to_interrupt|cpu_run_to_interrupt|fiber_fix_fault_pc)')
+SYSCALL = re.compile(r'^(sys_|do_syscall|handle_interrupt|task_run_current)')
 LINE = re.compile(r'^([\s+!:|]*)(\d+)\s+(.*?)(?:\s+\[(0x[0-9a-f]+)(?:,[^\]]*)?\])?\s*$')
 
 
 def load_map(path):
     mods, segs = {}, []
+    tlb_ranges = []
     for line in open(path):
         p = line.split()
         if p and p[0] == 'M':
@@ -34,8 +41,12 @@ def load_map(path):
         elif p and p[0] == 'S':
             code, words, mid = int(p[1], 16), int(p[2]), int(p[3])
             segs.append((code, code + 4 * words, mid))
+        elif p and p[0] == 'T':
+            code, words = int(p[1], 16), int(p[2])
+            tlb_ranges.append((code, code + 4 * words))
     segs.sort()
-    return mods, segs
+    tlb_ranges.sort()
+    return mods, segs, tlb_ranges
 
 
 def call_graph(path):
@@ -66,10 +77,13 @@ def main():
     ap.add_argument('map', nargs='?')
     ap.add_argument('--min', type=float, default=0.3, help='hide categories below this share (%%)')
     ap.add_argument('--top-ish', type=int, default=0, help='also list the N hottest ish functions')
+    ap.add_argument('--top-modules', type=int, default=10,
+                    help='list the N hottest translated guest modules (0 disables)')
     args = ap.parse_args()
 
-    mods, segs = load_map(args.map) if args.map else ({}, [])
+    mods, segs, tlb_ranges = load_map(args.map) if args.map else ({}, [], [])
     starts = [s[0] for s in segs]
+    tlb_starts = [s[0] for s in tlb_ranges]
 
     def module_of(addr):
         i = bisect.bisect_right(starts, addr) - 1
@@ -77,7 +91,11 @@ def main():
             return mods.get(segs[i][2], '?')
         return None
 
-    cat, ish_syms, idle = Counter(), Counter(), 0
+    def is_inline_tlb(addr):
+        i = bisect.bisect_right(tlb_starts, addr) - 1
+        return i >= 0 and tlb_ranges[i][0] <= addr < tlb_ranges[i][1]
+
+    cat, ish_syms, guest_modules, idle = Counter(), Counter(), Counter(), 0
     for _, count, sym, addr, child in call_graph(args.sample):
         own = count - child
         if own <= 0:
@@ -86,19 +104,30 @@ def main():
             idle += own
             continue
         if sym.startswith('???') and addr:
-            cat['JIT/AOT ' + (module_of(int(addr, 16)) or 'native (unmapped)')] += own
+            if is_inline_tlb(int(addr, 16)):
+                cat['iSH: inline JIT TLB checks'] += own
+                continue
+            module = module_of(int(addr, 16)) or 'native (unmapped)'
+            cat['JIT/AOT native guest code'] += own
+            guest_modules[module] += own
             continue
         if '(in ish)' not in sym:
             cat['host: ' + re.sub(r'.*\(in ([^)]*)\).*', r'\1', sym)] += own
             continue
         name = sym.split(' ')[0]
         ish_syms[name] += own
-        if name.startswith(('gadget_', 'fiber_ret', 'fiber_exit')):
-            cat['gadgets'] += own
+        if name.startswith('gadget_'):
+            cat['iSH: gadget execution'] += own
+        elif MEMORY.match(name):
+            cat['iSH: memory/TLB emulation'] += own
         elif TRANSLATE.match(name):
-            cat['ish: translation / image lookup'] += own
+            cat['iSH: JIT translation / image lookup'] += own
+        elif DISPATCH.match(name):
+            cat['iSH: dispatch / execution transitions'] += own
+        elif SYSCALL.match(name):
+            cat['iSH: syscall / kernel emulation'] += own
         else:
-            cat['ish: kernel, syscalls, runtime'] += own
+            cat['iSH: other runtime'] += own
 
     busy = sum(cat.values())
     if not busy:
@@ -108,6 +137,10 @@ def main():
     for k, v in cat.most_common():
         if 100 * v / busy >= args.min:
             print(f'  {100 * v / busy:5.1f}%  {v:7d}  {k}')
+    if args.top_modules and guest_modules:
+        print('  hottest translated guest modules:')
+        for module, count in guest_modules.most_common(args.top_modules):
+            print(f'    {100 * count / busy:5.1f}%  {count:7d}  {module}')
     if args.top_ish:
         print('  hottest ish functions:', ', '.join(f'{k} {v}' for k, v in ish_syms.most_common(args.top_ish)))
 

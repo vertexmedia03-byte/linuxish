@@ -4,9 +4,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifdef ISH_PROFILE
+#include "asbestos/profile.h"
+#endif
 #include "kernel/calls.h"
 #include "kernel/task.h"
 #include "kernel/memory.h"
+#include "emu/interrupt.h"
 #include "emu/tlb.h"
 
 __thread struct task *current;
@@ -235,7 +239,15 @@ void task_run_current() {
         tlb_detach(tlb);
 #endif
         read_wrunlock(&self->mem->lock);
+#ifdef ISH_PROFILE
+        bool profile_syscall = interrupt == INT_SYSCALL && ish_profile_active();
+        uint64_t profile_syscall_start = profile_syscall ? ish_profile_ticks() : 0;
+#endif
         handle_interrupt(interrupt);
+#ifdef ISH_PROFILE
+        if (profile_syscall)
+            ish_profile_add_syscall(ish_profile_ticks() - profile_syscall_start);
+#endif
     }
 
     // Never reached in practice (loop only exits via pthread_exit/do_exit),
@@ -286,4 +298,3 @@ void update_thread_name() {
     pthread_setname_np(pthread_self(), name);
 #endif
 }
-

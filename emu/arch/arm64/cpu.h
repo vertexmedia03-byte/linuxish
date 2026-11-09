@@ -90,6 +90,10 @@ struct cpu_state {
     // Access atomically
     bool *poked_ptr;
     bool _poked;
+
+    uint64_t profile_gadget_start;
+    uint64_t profile_gadget_ticks;
+    uint64_t profile_gadget_calls;
 };
 
 #ifndef CPU_OFFSET

@@ -1,5 +1,8 @@
 #include "emu/cpu.h"
 #include "emu/tlb.h"
+#ifdef ISH_PROFILE
+#include "asbestos/profile.h"
+#endif
 #include "kernel/task.h"
 #include "kernel/memory.h"
 #include "kernel/fs.h"
@@ -98,6 +101,10 @@ bool __tlb_write_cross_page(struct tlb *tlb, addr_t addr, const char *value, uns
 }
 
 __no_instrument void *tlb_handle_miss(struct tlb *tlb, addr_t addr, int type) {
+#ifdef ISH_PROFILE
+    bool profile_sample = ish_profile_active();
+    uint64_t profile_start = profile_sample ? ish_profile_ticks() : 0;
+#endif
     // Seqlock-style translate: snapshot mmu->changes BEFORE translating, then
     // verify it did not advance across the translation. If it did, another
     // thread remapped a page concurrently and `ptr` may reference the stale
@@ -138,6 +145,10 @@ __no_instrument void *tlb_handle_miss(struct tlb *tlb, addr_t addr, int type) {
     }
     if (ptr == NULL) {
         tlb->segfault_addr = addr;
+#ifdef ISH_PROFILE
+        if (profile_sample)
+            ish_profile_add_tlb_miss(ish_profile_ticks() - profile_start);
+#endif
         return NULL;
     }
 
@@ -166,6 +177,10 @@ __no_instrument void *tlb_handle_miss(struct tlb *tlb, addr_t addr, int type) {
         }
     }
 
+#ifdef ISH_PROFILE
+    if (profile_sample)
+        ish_profile_add_tlb_miss(ish_profile_ticks() - profile_start);
+#endif
     return (void *) (tlb_ent->data_minus_addr + addr);
 }
 

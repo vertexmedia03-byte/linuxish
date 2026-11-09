@@ -29,5 +29,7 @@ option('jit_emit', type: 'boolean', value: true,
        description: 'With jit: translate at run time (needs executable memory). false runs only AOT images linked into the target.')
 option('jit_strict', type: 'boolean', value: false,
        description: 'With jit_emit: abort instead of running untranslated guest blocks as gadgets.')
+option('profile', type: 'boolean', value: false,
+       description: 'Build opt-in on-device CPU profiling instrumentation.')
 option('cli_aot', type: 'array', value: [],
        description: 'AOT images (aot_<name>.S from tools/jit_aot/gen.py) to link into the ish CLI executable only; needs jit.')

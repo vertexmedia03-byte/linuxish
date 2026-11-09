@@ -11,9 +11,11 @@ ISH_GUEST_DEFINES = GUEST_ARM64=1
 // ARM64 targets bypass the Project{Debug,Release}.xcconfig chain, so DEBUG=1
 // must be set explicitly per build configuration. Release variants leave it
 // unset so DEBUG-gated code (e.g. DebugServer) is fully excluded.
-GCC_PREPROCESSOR_DEFINITIONS = GUEST_ARM64=1
-GCC_PREPROCESSOR_DEFINITIONS[config=Debug-ApplePleaseFixFB19282108] = GUEST_ARM64=1 DEBUG=1
-GCC_PREPROCESSOR_DEFINITIONS[config=DebugLinux] = GUEST_ARM64=1 DEBUG=1
+// Set ISH_PROFILE_DEFINE=ISH_PROFILE=1 for diagnostic profiling builds.
+ISH_PROFILE_DEFINE =
+GCC_PREPROCESSOR_DEFINITIONS = GUEST_ARM64=1 $(ISH_PROFILE_DEFINE)
+GCC_PREPROCESSOR_DEFINITIONS[config=Debug-ApplePleaseFixFB19282108] = GUEST_ARM64=1 DEBUG=1 $(ISH_PROFILE_DEFINE)
+GCC_PREPROCESSOR_DEFINITIONS[config=DebugLinux] = GUEST_ARM64=1 DEBUG=1 $(ISH_PROFILE_DEFINE)
 
 // Meson options for ARM64 guest
 MESON_GUEST_OPTION = -Dguest_arch=arm64

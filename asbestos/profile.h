@@ -1,0 +1,22 @@
+#ifndef ASBESTOS_PROFILE_H
+#define ASBESTOS_PROFILE_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+bool ish_profile_active(void);
+uint64_t ish_profile_ticks(void);
+uint64_t ish_profile_ticks_per_second(void);
+void ish_profile_reset(void);
+void ish_profile_add_dispatch(uint64_t ticks);
+void ish_profile_add_guest(uint64_t ticks, uint64_t blocks, uint64_t insns,
+                           uint64_t gadget_ticks, uint64_t gadget_calls);
+void ish_profile_add_tlb_miss(uint64_t ticks);
+void ish_profile_add_syscall(uint64_t ticks);
+void ish_profile_add_jit_decode(uint64_t ticks);
+void ish_profile_add_jit_translate(uint64_t ticks);
+int ish_profile_control(const char *cmd, size_t len);
+size_t ish_profile_describe(char *buf, size_t size);
+
+#endif

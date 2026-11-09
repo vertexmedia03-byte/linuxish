@@ -53,6 +53,13 @@ if ish_jit
     endif
 endif
 
+if get_option('profile')
+    if guest_arch != 'arm64'
+        error('-Dprofile=true requires guest_arch=arm64')
+    endif
+    add_project_arguments('-DISH_PROFILE=1', language: 'c')
+endif
+
 add_project_arguments('-Wno-switch', language: 'c')
 
 # ISH_GADGET_PROFILE: enable gadget call ring-buffer + atexit dump.
@@ -108,6 +115,7 @@ gadgets = gadgets_base + host_machine.cpu_family()
 if guest_arch == 'x86'
     emu_src += [
         'asbestos/asbestos.c',
+        'asbestos/profile.c',
         'asbestos/guest-x86/gen.c',
         'asbestos/helpers.c',
         gadgets+'/entry.S',
@@ -122,6 +130,7 @@ if guest_arch == 'x86'
 elif guest_arch == 'arm64'
     emu_src += [
         'asbestos/asbestos.c',
+        'asbestos/profile.c',
         'asbestos/guest-arm64/gen.c',
         'asbestos/guest-arm64/crypto_helpers.c',
         'asbestos/helpers.c',

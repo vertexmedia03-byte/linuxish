@@ -142,6 +142,7 @@ fiber_ret:
  */
 .global fiber_exit
 fiber_exit:
+    profile_gadget_end
     // [T-ish-precise-fault-pc] Every exit records where in the code stream
     // it left. cpu->pc only tracks the current block's start; for an INT_GPF
     // the run loop maps this back to the faulting instruction.

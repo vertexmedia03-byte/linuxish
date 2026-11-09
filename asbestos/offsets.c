@@ -101,6 +101,9 @@ void cpu() {
 
     // Cycle counter (for timer interrupts in chained blocks)
     OFFSET(CPU, cpu_state, cycle);
+    OFFSET(CPU, cpu_state, profile_gadget_start);
+    OFFSET(CPU, cpu_state, profile_gadget_ticks);
+    OFFSET(CPU, cpu_state, profile_gadget_calls);
 #endif
 
     // Common offsets

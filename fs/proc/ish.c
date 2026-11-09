@@ -2,6 +2,9 @@
 #include "fs/proc/ish.h"
 #include "kernel/errno.h"
 #include "fs/poll.h"
+#ifdef ISH_PROFILE
+#include "asbestos/profile.h"
+#endif
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -181,6 +184,19 @@ static ssize_t proc_ish_write_jit(struct proc_entry *UNUSED(entry), struct proc_
 }
 #endif
 
+#ifdef ISH_PROFILE
+static int proc_ish_show_profile(struct proc_entry *UNUSED(entry), struct proc_data *buf) {
+    char text[1024];
+    ish_profile_describe(text, sizeof(text));
+    proc_printf(buf, "%s", text);
+    return 0;
+}
+static ssize_t proc_ish_write_profile(struct proc_entry *UNUSED(entry), struct proc_data *data,
+                                      off_t UNUSED(off)) {
+    return ish_profile_control(data->data, data->size) == 0 ? (ssize_t) data->size : _EINVAL;
+}
+#endif
+
 // [T-ish-poll-spin-guard] Poll wakeup counters and guard switches (fs/poll.c).
 static int proc_ish_show_poll_spin(struct proc_entry *UNUSED(entry), struct proc_data *buf) {
     char text[512];
@@ -201,5 +217,8 @@ struct proc_children proc_ish_children = PROC_CHILDREN({
     {"jit", .show = proc_ish_show_jit, .pwrite = proc_ish_write_jit},
 #endif
     {"poll_spin", .show = proc_ish_show_poll_spin, .pwrite = proc_ish_write_poll_spin},
+#ifdef ISH_PROFILE
+    {"profile", .show = proc_ish_show_profile, .pwrite = proc_ish_write_profile},
+#endif
     {"version", .show = proc_ish_show_version},
 });

@@ -170,7 +170,51 @@ large and its own share of the CPU explains it (ssh: 76% of the CPU in ssh itsel
 libcurl about 2%, not worth it). `guest/measure/` holds the workloads; git needs a fakefs rootfs
 (`-f`), since git hangs on the Mac CLI's realfs.
 
+For Python, `py_local` is a repeatable CPU workload without network waits; `py` adds HTTPS work
+and can include network latency. The sample report separates native guest modules (including
+`libpython` and C extensions), inline JIT TLB checks, C-side memory/TLB misses, gadgets, dispatch
+transitions, JIT compilation, syscall/kernel emulation, and other runtime work. It also lists hot
+iSH functions. Percentages are statistical CPU sample shares, not exact elapsed-time counters;
+waiting threads are reported separately. Inline TLB checks are tagged in the JIT map only when
+`ISH_JIT_MAP` is enabled, so this profiling metadata does not add work to normal execution.
+`py_local` sampling example:
+
+```sh
+DUR=20 OUT=/tmp/ish-py-profile benchmark/aojit/profile.sh py_local \
+  build-arm64-aot/ish build-arm64-jit/ish -r "$R"
+```
+
+The map lets the report distinguish emitted TLB lookup/check instructions from the rest of the
+translated native code. The actual host load/store instruction stays attributed to its guest
+module; C-side miss handling appears under memory/TLB emulation. Compare multiple runs and use
+Instruments Time Profiler when profiling the iOS app itself.
+
 ## Regenerate
+
+### On-device profiling (no macOS required)
+
+The GitHub Actions workflow can build a diagnostic IPA with profiling enabled. Run
+**Build iSH ARM64 IPA for TrollStore** using `workflow_dispatch`, select
+`diagnostic_profile`, then download the `iSH-ARM64-profile-ipa` artifact and install it with
+TrollStore. The normal workflow build remains uninstrumented.
+
+In iSH, start counters immediately before the workload and stop them afterward:
+
+```sh
+echo start > /proc/ish/profile
+python3 -m cProfile -o /tmp/workload.prof your_workload.py
+echo stop > /proc/ish/profile
+cat /proc/ish/profile
+python3 -c "import pstats; pstats.Stats('/tmp/workload.prof').strip_dirs().sort_stats('cumulative').print_stats(30)"
+```
+
+`cProfile` gives Python function-level statistics, while `/proc/ish/profile` reports guest execution,
+gadget transfers, C-side TLB misses, dispatch, syscalls, and JIT decode/translation. Gadget and TLB
+times are subsets of guest-engine time; JIT timings are subsets of dispatch time. Do not add these
+overlapping categories together. Both profilers add overhead, so use them to locate hot areas and
+then compare workload wall time without profiling.
+
+For a local CLI diagnostic build, add `-Dprofile=true` to the ARM64 Meson setup command.
 
 All commands run from the repo root (`ish-arm64-ios-opt`). `R` is a rootfs directory and `ABI`
 is the abi of the recording build.

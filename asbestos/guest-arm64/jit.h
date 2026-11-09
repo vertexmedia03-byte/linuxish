@@ -15,13 +15,16 @@
 // - Loads/stores inline the TLB lookup; a miss resumes the unit's gadget.
 // - Block ends (b/bl/b.cond/cbz/tbz/ret/br/blr) are translated; chained
 //   successors are reached through patched direct branches.
+// - Supported SIMD/FP instructions, including scalar conversions and
+//   conditional compares, execute directly in native code.
 //
 // Without ISH_JIT none of this is compiled and every hook below is absent, so
 // the build is the plain gadget engine. With it, ISH_JIT=0 in the
 // environment turns the translator off at run time (the BLR code stream keeps
 // its JIT layout). Tuning / diagnostics: ISH_JIT_PIN=0, ISH_JIT_LINK=0,
-// ISH_JIT_LOOP=0, ISH_JIT_SIMD=0, ISH_JIT_STATS=1, ISH_JIT_DUMP=<file>,
-// ISH_JIT_MAP=<file> (native code -> guest module and file offset).
+// ISH_JIT_LOOP=0, ISH_JIT_SIMD=0, ISH_JIT_DIRTY=0 (eagerly spill lazy
+// registers), ISH_JIT_STATS=1, ISH_JIT_DUMP=<file>, ISH_JIT_MAP=<file>
+// (native code -> guest module and file offset).
 //
 // ISH_JIT_PIC=1 emits position-independent code (jit.c, "PIC"): nothing in it
 // depends on where the guest module or its blocks live, and a registry reuses
@@ -32,6 +35,9 @@
 // into an image that a target links in (aot.h). A build with -Djit_emit=false
 // runs only such images and never maps executable memory; ISH_JIT_AOT_ONLY=1
 // does the same in a JIT build.
+// SHA-512 instructions are emitted directly only when the host feature probe
+// reports support; the feature is part of the AOT ABI to prevent SIGILL on
+// hosts that cannot execute them.
 
 #ifdef ISH_JIT
 
