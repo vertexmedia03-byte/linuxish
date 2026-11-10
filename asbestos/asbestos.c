@@ -1106,8 +1106,6 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
                 atomic_fetch_add_explicit(&s_dispatch_iterations, 1, memory_order_relaxed);
         }
 
-        jit_frame = frame;
-        in_jit = 1;
 #ifdef ISH_JIT
         jit_exec_ready();
 #endif
@@ -1130,6 +1128,8 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
             profile_gadget_calls = frame->cpu.profile_gadget_calls;
         }
 #endif
+        jit_frame = frame;
+        in_jit = 1;
         interrupt = fiber_enter(block, frame, tlb);
         in_jit = 0;
         jit_frame = NULL;
