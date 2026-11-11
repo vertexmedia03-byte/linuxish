@@ -1054,8 +1054,11 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
                 // and is thus assumed to have no pointers left
                 if (!last_block->is_jetsam && !block->is_jetsam) {
                     for (int i = 0; i <= 1; i++) {
-                        if (last_block->jump_ip[i] == NULL ||
-                                (*last_block->jump_ip[i] & 0xffffffff) != block->addr)
+                        if (last_block->jump_ip[i] == NULL)
+                            continue;
+                        unsigned long target = *last_block->jump_ip[i];
+                        if (!(target & (1UL << 63)) ||
+                                (target & 0x0000ffffffffffffUL) != block->addr)
                             continue;
 #ifdef ISH_JIT
                         if (!jit_chain_ok(last_block, i, block)) {

@@ -1485,6 +1485,54 @@ make_fused_subs_reg_bcond gt, gt
 make_fused_subs_reg_bcond le, le
 
 /*
+ * Fused CMP/SUBS W-register + B.cond gadgets.
+ */
+.macro make_fused_cmp32_reg_bcond name, cond
+.gadget fused_cmp32_reg_bcond_\name
+    ldr x8, [_pc]
+    add _pc, _pc, #8
+    ldr x9, [_pc]
+    add _pc, _pc, #8
+    ldr x10, [_pc]
+    and x11, x8, #0x1f
+    ubfx x12, x8, #8, #5
+    add x13, _cpu, #CPU_x0
+    ldr x14, [x13, x11, lsl #3]
+    ldr x15, [x13, x12, lsl #3]
+    subs wzr, w14, w15
+    mrs x16, nzcv
+    str w16, [_cpu, #CPU_nzcv]
+    b.\cond bcond_taken
+    b bcond_not_taken
+.endm
+
+.macro make_fused_subs32_reg_bcond name, cond
+.gadget fused_subs32_reg_bcond_\name
+    ldr x8, [_pc]
+    add _pc, _pc, #8
+    ldr x9, [_pc]
+    add _pc, _pc, #8
+    ldr x10, [_pc]
+    and x11, x8, #0x1f
+    ubfx x12, x8, #8, #5
+    ubfx x13, x8, #16, #5
+    add x14, _cpu, #CPU_x0
+    ldr x15, [x14, x12, lsl #3]
+    ldr x16, [x14, x13, lsl #3]
+    subs w15, w15, w16
+    str x15, [x14, x11, lsl #3]
+    mrs x15, nzcv
+    str w15, [_cpu, #CPU_nzcv]
+    b.\cond bcond_taken
+    b bcond_not_taken
+.endm
+
+.irp cc, eq, ne, cs, cc, mi, pl, vs, vc, hi, ls, ge, lt, gt, le
+make_fused_cmp32_reg_bcond \cc, \cc
+make_fused_subs32_reg_bcond \cc, \cc
+.endr
+
+/*
  * gadget_prebuilt_entry — entry point for a "prebuilt gadget" (specialized block).
  *
  * A registered guest function's whole block is replaced by ONE giant gadget:

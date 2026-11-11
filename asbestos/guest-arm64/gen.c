@@ -880,6 +880,35 @@ extern void gadget_fused_subs_reg_bcond_ge(void);
 extern void gadget_fused_subs_reg_bcond_lt(void);
 extern void gadget_fused_subs_reg_bcond_gt(void);
 extern void gadget_fused_subs_reg_bcond_le(void);
+// Fused CMP/SUBS_reg + B.cond gadgets (32-bit)
+extern void gadget_fused_cmp32_reg_bcond_eq(void);
+extern void gadget_fused_cmp32_reg_bcond_ne(void);
+extern void gadget_fused_cmp32_reg_bcond_cs(void);
+extern void gadget_fused_cmp32_reg_bcond_cc(void);
+extern void gadget_fused_cmp32_reg_bcond_mi(void);
+extern void gadget_fused_cmp32_reg_bcond_pl(void);
+extern void gadget_fused_cmp32_reg_bcond_vs(void);
+extern void gadget_fused_cmp32_reg_bcond_vc(void);
+extern void gadget_fused_cmp32_reg_bcond_hi(void);
+extern void gadget_fused_cmp32_reg_bcond_ls(void);
+extern void gadget_fused_cmp32_reg_bcond_ge(void);
+extern void gadget_fused_cmp32_reg_bcond_lt(void);
+extern void gadget_fused_cmp32_reg_bcond_gt(void);
+extern void gadget_fused_cmp32_reg_bcond_le(void);
+extern void gadget_fused_subs32_reg_bcond_eq(void);
+extern void gadget_fused_subs32_reg_bcond_ne(void);
+extern void gadget_fused_subs32_reg_bcond_cs(void);
+extern void gadget_fused_subs32_reg_bcond_cc(void);
+extern void gadget_fused_subs32_reg_bcond_mi(void);
+extern void gadget_fused_subs32_reg_bcond_pl(void);
+extern void gadget_fused_subs32_reg_bcond_vs(void);
+extern void gadget_fused_subs32_reg_bcond_vc(void);
+extern void gadget_fused_subs32_reg_bcond_hi(void);
+extern void gadget_fused_subs32_reg_bcond_ls(void);
+extern void gadget_fused_subs32_reg_bcond_ge(void);
+extern void gadget_fused_subs32_reg_bcond_lt(void);
+extern void gadget_fused_subs32_reg_bcond_gt(void);
+extern void gadget_fused_subs32_reg_bcond_le(void);
 
 static void gen(struct gen_state *state, unsigned long thing) {
     assert(state->size <= state->capacity);
@@ -1238,6 +1267,8 @@ static void *fused_cmp32_bcond_gadgets[14];
 static void *fused_subs32_bcond_gadgets[14];
 static void *fused_cmp_reg_bcond_gadgets[14];
 static void *fused_subs_reg_bcond_gadgets[14];
+static void *fused_cmp32_reg_bcond_gadgets[14];
+static void *fused_subs32_reg_bcond_gadgets[14];
 // AND_imm + CMP_imm + B.cond — 14-slot table indexed by condition.
 // Slots for mi/pl/vs/vc are NULL because emitting fused gadgets for them
 // changes meaning when the AND result drives N/V (signed comparison) —
@@ -1333,6 +1364,34 @@ static void init_fused_bcond_tables(void) {
     fused_subs_reg_bcond_gadgets[11] = gadget_fused_subs_reg_bcond_lt;
     fused_subs_reg_bcond_gadgets[12] = gadget_fused_subs_reg_bcond_gt;
     fused_subs_reg_bcond_gadgets[13] = gadget_fused_subs_reg_bcond_le;
+    fused_cmp32_reg_bcond_gadgets[0]  = gadget_fused_cmp32_reg_bcond_eq;
+    fused_cmp32_reg_bcond_gadgets[1]  = gadget_fused_cmp32_reg_bcond_ne;
+    fused_cmp32_reg_bcond_gadgets[2]  = gadget_fused_cmp32_reg_bcond_cs;
+    fused_cmp32_reg_bcond_gadgets[3]  = gadget_fused_cmp32_reg_bcond_cc;
+    fused_cmp32_reg_bcond_gadgets[4]  = gadget_fused_cmp32_reg_bcond_mi;
+    fused_cmp32_reg_bcond_gadgets[5]  = gadget_fused_cmp32_reg_bcond_pl;
+    fused_cmp32_reg_bcond_gadgets[6]  = gadget_fused_cmp32_reg_bcond_vs;
+    fused_cmp32_reg_bcond_gadgets[7]  = gadget_fused_cmp32_reg_bcond_vc;
+    fused_cmp32_reg_bcond_gadgets[8]  = gadget_fused_cmp32_reg_bcond_hi;
+    fused_cmp32_reg_bcond_gadgets[9]  = gadget_fused_cmp32_reg_bcond_ls;
+    fused_cmp32_reg_bcond_gadgets[10] = gadget_fused_cmp32_reg_bcond_ge;
+    fused_cmp32_reg_bcond_gadgets[11] = gadget_fused_cmp32_reg_bcond_lt;
+    fused_cmp32_reg_bcond_gadgets[12] = gadget_fused_cmp32_reg_bcond_gt;
+    fused_cmp32_reg_bcond_gadgets[13] = gadget_fused_cmp32_reg_bcond_le;
+    fused_subs32_reg_bcond_gadgets[0]  = gadget_fused_subs32_reg_bcond_eq;
+    fused_subs32_reg_bcond_gadgets[1]  = gadget_fused_subs32_reg_bcond_ne;
+    fused_subs32_reg_bcond_gadgets[2]  = gadget_fused_subs32_reg_bcond_cs;
+    fused_subs32_reg_bcond_gadgets[3]  = gadget_fused_subs32_reg_bcond_cc;
+    fused_subs32_reg_bcond_gadgets[4]  = gadget_fused_subs32_reg_bcond_mi;
+    fused_subs32_reg_bcond_gadgets[5]  = gadget_fused_subs32_reg_bcond_pl;
+    fused_subs32_reg_bcond_gadgets[6]  = gadget_fused_subs32_reg_bcond_vs;
+    fused_subs32_reg_bcond_gadgets[7]  = gadget_fused_subs32_reg_bcond_vc;
+    fused_subs32_reg_bcond_gadgets[8]  = gadget_fused_subs32_reg_bcond_hi;
+    fused_subs32_reg_bcond_gadgets[9]  = gadget_fused_subs32_reg_bcond_ls;
+    fused_subs32_reg_bcond_gadgets[10] = gadget_fused_subs32_reg_bcond_ge;
+    fused_subs32_reg_bcond_gadgets[11] = gadget_fused_subs32_reg_bcond_lt;
+    fused_subs32_reg_bcond_gadgets[12] = gadget_fused_subs32_reg_bcond_gt;
+    fused_subs32_reg_bcond_gadgets[13] = gadget_fused_subs32_reg_bcond_le;
     // 32-bit AND_imm + CMP_imm + B.cond (subset of conditions)
     extern void gadget_fused_and_cmp32_bcond_eq(void);
     extern void gadget_fused_and_cmp32_bcond_ne(void);
@@ -1400,11 +1459,11 @@ static int try_fuse_subs_bcond(struct gen_state *state, uint32_t sf, uint32_t rd
 }
 
 /*
- * Try to fuse SUBS/CMP reg (64-bit, no shift) with a following B.cond.
+ * Try to fuse SUBS/CMP reg (32- or 64-bit, no shift) with a following B.cond.
  * Returns 0 (block ended) if fused, -1 if not fuseable.
- * Only for sf=1, imm6=0, rn!=31, rm!=31
+ * Requires imm6=0, rn!=31, rm!=31.
  */
-static int try_fuse_subs_reg_bcond(struct gen_state *state, uint32_t rd, uint32_t rn, uint32_t rm) {
+static int try_fuse_subs_reg_bcond(struct gen_state *state, uint32_t sf, uint32_t rd, uint32_t rn, uint32_t rm) {
     uint32_t next_insn;
     if (!gen_peek_next_insn(state, &next_insn))
         return -1;
@@ -1425,11 +1484,13 @@ static int try_fuse_subs_reg_bcond(struct gen_state *state, uint32_t rd, uint32_
 
     if (rd == 31) {
         // CMP reg: no result, only flags
-        gen(state, (unsigned long)fused_cmp_reg_bcond_gadgets[cond]);
+        gen(state, (unsigned long)(sf ? fused_cmp_reg_bcond_gadgets[cond] :
+                                       fused_cmp32_reg_bcond_gadgets[cond]));
         gen(state, rn | (rm << 8));
     } else {
         // SUBS reg: result + flags
-        gen(state, (unsigned long)fused_subs_reg_bcond_gadgets[cond]);
+        gen(state, (unsigned long)(sf ? fused_subs_reg_bcond_gadgets[cond] :
+                                       fused_subs32_reg_bcond_gadgets[cond]));
         gen(state, rd | (rn << 8) | (rm << 16));
     }
     gen(state, fake_target);
@@ -3771,19 +3832,21 @@ static int gen_dp_reg(struct gen_state *state, uint32_t insn) {
             return 0;
         }
 
-        // Try specialized 64-bit fast paths (no shift, no XZR operands)
-        bool can_spec_reg = sf && imm6 == 0 && rn != 31 && rm != 31;
+        // Try fused compare/subtract-and-branch forms before the width-specific
+        // arithmetic paths. The 64-bit path retains its existing constraints.
+        bool can_spec_reg = imm6 == 0 && rn != 31 && rm != 31;
         if (can_spec_reg && S && op == 1) {
             // Try fused SUBS_reg + B.cond
-            int fused = try_fuse_subs_reg_bcond(state, rd, rn, rm);
+            int fused = try_fuse_subs_reg_bcond(state, sf, rd, rn, rm);
             if (fused == 0) return 0;
         }
-        if (can_spec_reg && S) {
+        bool can_spec_reg64 = sf && can_spec_reg;
+        if (can_spec_reg64 && S) {
             gen(state, (unsigned long)(op ? gadget_subs_reg_64_nshift : gadget_adds_reg_64_nshift));
             gen(state, rd | (rn << 8) | (rm << 16));
             return 1;
         }
-        if (can_spec_reg && !S && rd != 31) {
+        if (can_spec_reg64 && !S && rd != 31) {
             gen(state, (unsigned long)(op ? gadget_sub_reg_64_nshift : gadget_add_reg_64_nshift));
             gen(state, rd | (rn << 8) | (rm << 16));
             return 1;
