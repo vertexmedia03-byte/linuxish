@@ -3840,13 +3840,13 @@ static int gen_dp_reg(struct gen_state *state, uint32_t insn) {
             int fused = try_fuse_subs_reg_bcond(state, sf, rd, rn, rm);
             if (fused == 0) return 0;
         }
-        bool can_spec_reg64 = sf && can_spec_reg;
-        if (can_spec_reg64 && S) {
+        bool can_spec_reg_width64 = sf && can_spec_reg;
+        if (can_spec_reg_width64 && S) {
             gen(state, (unsigned long)(op ? gadget_subs_reg_64_nshift : gadget_adds_reg_64_nshift));
             gen(state, rd | (rn << 8) | (rm << 16));
             return 1;
         }
-        if (can_spec_reg64 && !S && rd != 31) {
+        if (can_spec_reg_width64 && !S && rd != 31) {
             gen(state, (unsigned long)(op ? gadget_sub_reg_64_nshift : gadget_add_reg_64_nshift));
             gen(state, rd | (rn << 8) | (rm << 16));
             return 1;
