@@ -231,6 +231,87 @@ ret_no_cache:
 #endif
     b fiber_ret
 
+// Fused CPython Py_INCREF sequence.
+// Stream: [refcount register][object register]
+.gadget incref
+    ldr x22, [_pc], #8
+    ldr x23, [_pc], #8
+    add x11, _cpu, #CPU_x0
+    cmp x23, #31
+    b.eq fused_incref_sp
+    ldr x7, [x11, x23, lsl #3]
+    b fused_incref_addr
+fused_incref_sp:
+    ldr x7, [_cpu, #CPU_sp]
+fused_incref_addr:
+    and x7, x7, #0xffffffffffff
+    mov x24, x7
+    read_prep 32, fused_incref_read
+    ldr w0, [_addr]
+    adds w0, w0, #1
+    store_flags
+    mov w27, w0
+    add x13, _cpu, #CPU_x0
+    str x27, [x13, x22, lsl #3]
+    cbz w27, fused_incref_done
+    mov x7, x24
+    write_prep 32, fused_incref_write
+    str w27, [_addr]
+    write_done 32, fused_incref_write
+fused_incref_done:
+    mov x7, x24
+    gret
+    read_bullshit 32, fused_incref_read
+    write_bullshit 32, fused_incref_write
+
+// Fused CPython Py_DECREF fast path.
+// Stream: [refcount register][object register][skip target][dealloc target]
+.gadget decref
+    ldr x22, [_pc], #8
+    ldr x23, [_pc], #8
+    ldp x25, x26, [_pc], #16
+    add x11, _cpu, #CPU_x0
+    cmp x23, #31
+    b.eq fused_decref_sp
+    ldr x7, [x11, x23, lsl #3]
+    b fused_decref_addr
+fused_decref_sp:
+    ldr x7, [_cpu, #CPU_sp]
+fused_decref_addr:
+    and x7, x7, #0xffffffffffff
+    mov x24, x7
+    read_prep 64, fused_decref_read
+    ldr x27, [_addr]
+    tbnz w27, #31, fused_decref_immortal
+    sub x27, x27, #1
+    add x13, _cpu, #CPU_x0
+    str x27, [x13, x22, lsl #3]
+    mov x7, x24
+    write_prep 64, fused_decref_write
+    str x27, [_addr]
+    write_done 64, fused_decref_write
+    cbnz x27, fused_decref_skip
+    mov x9, x26
+    inline_chain x9, fused_decref_dealloc_unchained
+fused_decref_dealloc_unchained:
+    and x11, x9, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x9
+    b fiber_ret_chain
+fused_decref_immortal:
+    add x13, _cpu, #CPU_x0
+    str x27, [x13, x22, lsl #3]
+fused_decref_skip:
+    mov x9, x25
+    inline_chain x9, fused_decref_skip_unchained
+fused_decref_skip_unchained:
+    and x11, x9, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x9
+    b fiber_ret_chain
+    read_bullshit 64, fused_decref_read
+    write_bullshit 64, fused_decref_write
+
 /*
  * Compare and branch if zero (CBZ)
  * Code stream: [gadget addr][rt | sf<<8 (64-bit)][fake_target (64-bit)][fake_fallthrough (64-bit)]

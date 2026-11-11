@@ -166,28 +166,25 @@ _addr   .req x7    // Changed from x3/x4 to x7 to avoid conflict with guest low 
 
     // Extract page-aligned address (48-bit address space, clear low 12 bits)
     and x8, x7, #0xfffffffffffff000
-    .ifc \type,write
-        str x8, [_tlb, #(-TLB_entries+TLB_dirty_page)]
+    // Bits 12..24 of (addr ^ (addr >> 13)) are the TLB index.
+    // Fold before extracting; compute the entry address while the stale-flag
+    // and entry loads are independent and can overlap.
+    eor x9, x7, x7, lsr #13
+    ubfx x9, x9, #12, #13
+    add x9, _tlb, x9, lsl #5
+
+    .ifc \type,read
+        ldr x11, [x9, #TLB_ENTRY_page]
+    .else
+        ldr x11, [x9, #TLB_ENTRY_page_if_writable]
     .endif
+
     // A stale TLB (another thread changed the mappings, tlb->stale is
     // TLB_STALE) then matches no entry and every access takes the miss path.
     ldr x10, [_tlb, #(-TLB_entries+TLB_stale)]
     orr x8, x8, x10
 
-    // TLB index calculation: (addr >> 12) ^ (addr >> 26) masked to TLB_SIZE-1
-    ubfx x9, x7, #12, #13       // (addr >> 12) & 0x1fff (TLB_BITS=13)
-    eor x9, x9, x7, lsr #25    // XOR with (addr >> 25) = (addr >> (12+13))
-    and w9, w9, #0x1fff          // mask to TLB_SIZE-1
-    lsl x9, x9, #5
-    add x9, x9, _tlb
-
-    .ifc \type,read
-        ldr x10, [x9, #TLB_ENTRY_page]
-    .else
-        ldr x10, [x9, #TLB_ENTRY_page_if_writable]
-    .endif
-
-    cmp x8, x10
+    cmp x8, x11
     b.ne handle_miss_\id
 
     ldr x10, [x9, #TLB_ENTRY_data_minus_addr]
@@ -265,14 +262,13 @@ watch_hit_\id :
     cmp x8, #(0x1000-(\size/8))
     b.hi crosspage_write_prep_\id
     and x8, x7, #0xfffffffffffff000
-    str x8, [_tlb, #(-TLB_entries+TLB_dirty_page)]
-    ubfx x9, x7, #12, #13
-    eor x9, x9, x7, lsr #25
-    and w9, w9, #0x1fff
-    lsl x9, x9, #5
-    add x9, x9, _tlb
-    ldr x10, [x9, #TLB_ENTRY_page_if_writable]
-    cmp x8, x10
+    eor x9, x7, x7, lsr #13
+    ubfx x9, x9, #12, #13
+    add x9, _tlb, x9, lsl #5
+    ldr x11, [x9, #TLB_ENTRY_page_if_writable]
+    ldr x10, [_tlb, #(-TLB_entries+TLB_stale)]
+    orr x8, x8, x10
+    cmp x8, x11
     b.ne handle_miss_\id
     ldr x10, [x9, #TLB_ENTRY_data_minus_addr]
     add x7, x10, x7

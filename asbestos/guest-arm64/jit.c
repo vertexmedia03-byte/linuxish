@@ -54,6 +54,7 @@ static bool loop_off;     // ISH_JIT_LOOP=0: no register promotion in self-loops
 static bool simd_on;      // ISH_JIT_SIMD=0: leave SIMD/FP instructions to the gadgets
 static bool pin_on;       // ISH_JIT_PIN=0: no guest registers pinned in host registers
 static bool dirty_on;     // ISH_JIT_DIRTY=0: write lazy guest registers through immediately
+static bool tlb_stale_check; // ISH_JIT_TLB_STALE=0: skip per-access mapping-stale check
 static bool pic_on;       // ISH_JIT_PIC=1: position-independent code (see "PIC" below)
 static bool aot_only;     // ISH_JIT_AOT_ONLY=1: install AOT translations, translate nothing
                           // (what a build without the JIT would run)
@@ -227,14 +228,14 @@ static void jit_write_begin(void) {
 #endif
 }
 
-void jit_exec_ready(void) {
 #if TARGET_OS_OSX
+void jit_exec_ready(void) {
     if (!jit_writable)
         return;
     pthread_jit_write_protect_np(1);
     jit_writable = false;
-#endif
 }
+#endif
 
 static void install_code(uint8_t *dst, const uint32_t *src, size_t n) {
     jit_write_begin();
@@ -793,15 +794,19 @@ static void tlb_lookup(struct em *e, unsigned bytes, bool write, unsigned spos) 
     put(e, 0x8B000000u | (T_I << 16) | (5u << 10) | (2u << 5) | T_I);    // add x10, x2, x10, lsl #5
     unsigned pg = write ? offsetof(struct tlb_entry, page_if_writable) : offsetof(struct tlb_entry, page);
     put(e, 0xF9400000u | ((pg / 8) << 10) | (T_I << 5) | T_E); // ldr x11, [x10, #page]
-    // One check for "this page" and "does not cross it": x9 - page <=
-    // 0x1000 - bytes. An empty entry's page (TLB_PAGE_EMPTY) is above every
-    // 48-bit address, so it never passes.
-    // tlb->stale (TLB_STALE once another thread changed the mappings) ORed
-    // into the address: a stale TLB fails this check for every page.
-    int stale_off = (int) offsetof(struct tlb, stale) - (int) offsetof(struct tlb, entries);
-    put(e, 0xF8400000u | ((uint32_t) (stale_off & 0x1ff) << 12) | (2u << 5) | T_Q);   // ldur x12, [x2, #stale]
-    put(e, 0xAA000000u | (T_Q << 16) | (T_A << 5) | T_Q);      // orr x12, x9, x12
-    put(e, 0xCB000000u | (T_E << 16) | (T_Q << 5) | T_P);      // sub x8, x12, x11
+    // One range check handles "this page" and "does not cross it": address
+    // minus page must be <= 0x1000 - bytes. An empty entry's page is above
+    // every 48-bit address, so it never passes.
+    unsigned checked_addr = T_A;
+    if (tlb_stale_check) {
+        // A stale TLB is forced to miss even when the remapped host address
+        // remains readable. Disabling this is an unsafe opt-in fast path.
+        int stale_off = (int) offsetof(struct tlb, stale) - (int) offsetof(struct tlb, entries);
+        put(e, 0xF8400000u | ((uint32_t) (stale_off & 0x1ff) << 12) | (2u << 5) | T_Q); // ldur x12, [x2, #stale]
+        put(e, 0xAA000000u | (T_Q << 16) | (T_A << 5) | T_Q); // orr x12, x9, x12
+        checked_addr = T_Q;
+    }
+    put(e, 0xCB000000u | (T_E << 16) | (checked_addr << 5) | T_P); // sub x8, checked_addr, x11
     put(e, 0xF100001Fu | ((0x1000 - bytes) << 10) | (T_P << 5));   // cmp x8, #(0x1000-bytes)
     branch_stub(e, spos, 2);                                   // b.hi stub
     put(e, 0xF9400000u | ((offsetof(struct tlb_entry, data_minus_addr) / 8) << 10) | (T_I << 5) | T_E);  // ldr x11, [x10, #dma]
@@ -940,7 +945,11 @@ static bool emit_simd(struct em *e, uint32_t x) {
         three = true;
     } else if ((x & 0x9F3E0C00u) == 0x0E200800u) {                            // two-register misc (integer subset)
         unsigned op = (x >> 12) & 31, U = (x >> 29) & 1;
-        if (!(op <= 0x02 || op == 0x05 || op == 0x06 || (op >= 0x08 && op <= 0x0B) || (op == 0x12 && !U))) return false;
+        unsigned size = (x >> 22) & 3;
+        if (!(op <= 0x02 || op == 0x05 || op == 0x06 || (op >= 0x08 && op <= 0x0B) ||
+              (op == 0x04 && size != 3) || (op == 0x12 && !U) ||
+              (op == 0x13 && U && size != 3)))
+            return false;
         if (op == 0x05 && U && ((x >> 22) & 3) >= 2) return false;
         two = true;
     } else if ((x & 0x9F3E0C00u) == 0x0E300800u) {                            // across lanes (integer)
@@ -1091,11 +1100,13 @@ static void ldst_wb(struct em *e, int gn, int hn, int64_t imm) {
     writeback(e, gn);
 }
 
-// SIMD & FP loads and stores (b/h/s/d/q, single and pair, no register offset)
+// SIMD & FP loads and stores (b/h/s/d/q, single and pair)
 static bool emit_ldst_fp(struct em *e, uint32_t x, unsigned spos) {
     if ((x & 0x3A000000u) == 0x28000000u) {                                   // pair
         unsigned opc = x >> 30, L = (x >> 22) & 1, idx = (x >> 23) & 3;
-        if (opc == 3 || idx == 0) return false;                               // no-allocate pair: rare
+        if (opc == 3) return false;
+        // LDNP/STNP differ only by an allocation hint; use the equivalent
+        // ordinary pair access for their memory effects.
         unsigned scale = 2 + opc;
         int64_t imm = sext((x >> 15) & 0x7f, 7) << scale;
         int rt = x & 31, rt2 = (x >> 10) & 31, rn = (x >> 5) & 31;
@@ -1114,6 +1125,22 @@ static bool emit_ldst_fp(struct em *e, uint32_t x, unsigned spos) {
     bool q = opc >= 2;
     if (q && size) return false;
     unsigned scale = q ? 4 : size;
+    bool load = opc & 1;
+    if ((x & 0x3B200C00u) == 0x38200800u) {                             // register offset
+        int rm = (x >> 16) & 31;
+        int hm = rm == 31 ? 31 : hreg(e, rm);
+        unsigned option = (x >> 13) & 7, S = (x >> 12) & 1;
+        if (!(option & 2)) return false;
+        int gn = rn == 31 ? G_SP : rn;
+        int hn = hreg(e, gn);
+        put(e, 0x8B200000u | ((uint32_t) hm << 16) | (option << 13) |
+               ((S ? scale : 0) << 10) | ((uint32_t) hn << 5) | T_A);
+        tlb_lookup(e, 1u << scale, !load, spos);
+        if (!load) vload(e, V_N, rt);
+        put(e, (x & 0xC0C00000u) | 0x3D000000u | (T_A << 5) | V_N);
+        if (load) vstore(e, V_N, rt);
+        return true;
+    }
     int64_t imm;
     int wbmode = 0;
     if ((x & 0x3B000000u) == 0x39000000u) {                                   // unsigned offset
@@ -1126,7 +1153,6 @@ static bool emit_ldst_fp(struct em *e, uint32_t x, unsigned spos) {
     } else {
         return false;
     }
-    bool load = opc & 1;
     int gn = rn == 31 ? G_SP : rn;
     int hn = ldst_addr(e, gn, imm, wbmode == 1);
     tlb_lookup(e, 1u << scale, !load, spos);
@@ -1141,6 +1167,22 @@ static bool emit_ldst(struct em *e, uint32_t x, unsigned spos, bool *has_mem) {
     *has_mem = true;
     if (x & (1u << 26))
         return simd_on && emit_ldst_fp(e, x, spos);
+    if ((x & 0x3F000000u) == 0x08000000u) {
+        uint32_t op = x & 0x3FFFFC00u;
+        bool load = op == 0x08DFFC00u;    // LDAR
+        if (!load && op != 0x089FFC00u)   // STLR
+            return false;
+        unsigned size = x >> 30;
+        int rt = x & 31, rn = (x >> 5) & 31;
+        int hn = hreg(e, rn == 31 ? G_SP : rn);
+        int ht = rt == 31 ? 31 : hreg(e, rt);
+        put(e, 0xAA0003E0u | ((uint32_t) hn << 16) | T_A);
+        tlb_lookup(e, 1u << size, !load, spos);
+        put(e, (x & ~0x3FFu) | (T_A << 5) | (uint32_t) ht);
+        if (load && rt != 31)
+            writeback(e, rt);
+        return true;
+    }
     // --- load/store pair ---
     if ((x & 0x3A000000u) == 0x28000000u) {
         unsigned opc = x >> 30, L = (x >> 22) & 1, idx = (x >> 23) & 3;
@@ -1181,7 +1223,8 @@ static bool emit_ldst(struct em *e, uint32_t x, unsigned spos, bool *has_mem) {
         imm = (int64_t) ((x >> 10) & 0xfff) << size;
     } else if ((x & 0x3B200000u) == 0x38000000u) {                // imm9 forms
         unsigned k = (x >> 10) & 3;
-        if (k == 2) return false;                                 // unprivileged
+        // Guest threads run at the same emulated user privilege, so LDTR/STTR
+        // have the same access permissions as the corresponding ordinary form.
         imm = sext((x >> 12) & 0x1ff, 9);
         wbmode = k == 1 ? 1 : k == 3 ? 2 : 0;
     } else if ((x & 0x3B200C00u) == 0x38200800u) {                // register offset
@@ -1434,7 +1477,6 @@ static bool emit_insn(struct em *e, uint32_t x, uint64_t pc, unsigned spos, bool
         }
         return !e->fail;
     } else if ((x & 0x0A000000u) == 0x08000000u) {         // loads and stores
-        if ((x & 0x3F000000u) == 0x08000000u) return false;   // exclusives / atomics
         return emit_ldst(e, x, spos, has_mem);
     } else {
         return false;
@@ -4135,6 +4177,14 @@ static void jit_init(void) {
     simd_on = !env_off("ISH_JIT_SIMD");
     pin_on = !env_off("ISH_JIT_PIN");
     dirty_on = !env_off("ISH_JIT_DIRTY");
+#if TARGET_OS_OSX
+    tlb_stale_check = !env_off("ISH_JIT_TLB_STALE");
+#else
+    tlb_stale_check = getenv("ISH_JIT_TLB_STALE") != NULL &&
+                      !env_off("ISH_JIT_TLB_STALE");
+#endif
+    if (!tlb_stale_check)
+        fprintf(stderr, "JIT: unsafe fast TLB mode skips per-access remap checks\n");
     // AOT images are PIC code, so PIC is the default once one is linked in.
     const char *pic = getenv("ISH_JIT_PIC");
     pic_on = pic ? pic[0] == '1' : have_images;
