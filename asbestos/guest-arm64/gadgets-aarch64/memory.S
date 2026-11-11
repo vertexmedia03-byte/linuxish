@@ -71,9 +71,9 @@
     ubfx x9, x22, #8, #5
     ubfx x10, x22, #16, #5
     ubfx x12, x22, #24, #3
-    add x11, _cpu, #CPU_x0
-    ldr x14, [x11, x9, lsl #3]
-    ldr x15, [x11, x10, lsl #3]
+    add x23, _cpu, #CPU_x0
+    ldr x14, [x23, x9, lsl #3]
+    ldr x15, [x23, x10, lsl #3]
     lsl x15, x15, x12
     add _addr, x14, x15
     and _addr, _addr, #0xffffffffffff
@@ -81,7 +81,7 @@
     read_prep 64, load64_reg_fast_1
     ldr _tmp, [_addr]
     and x8, x22, #0x1f
-    str _tmp, [x11, x8, lsl #3]
+    str _tmp, [x23, x8, lsl #3]
     gret
     read_bullshit 64, load64_reg_fast_1
 
@@ -91,9 +91,9 @@
     ubfx x9, x22, #8, #5
     ubfx x10, x22, #16, #5
     ubfx x12, x22, #24, #3
-    add x11, _cpu, #CPU_x0
-    ldr x14, [x11, x9, lsl #3]
-    ldr x15, [x11, x10, lsl #3]
+    add x23, _cpu, #CPU_x0
+    ldr x14, [x23, x9, lsl #3]
+    ldr x15, [x23, x10, lsl #3]
     lsl x15, x15, x12
     add _addr, x14, x15
     and _addr, _addr, #0xffffffffffff
@@ -101,7 +101,7 @@
     read_prep 32, load32_reg_fast_1
     ldr w0, [_addr]
     and x8, x22, #0x1f
-    str x0, [x11, x8, lsl #3]
+    str x0, [x23, x8, lsl #3]
     gret
     read_bullshit 32, load32_reg_fast_1
 
@@ -113,15 +113,15 @@
     add _pc, _pc, #8
     ubfx x9, x22, #8, #5
     asr x10, x22, #16          // signed offset (sign-extended)
-    add x11, _cpu, #CPU_x0
-    ldr x12, [x11, x9, lsl #3]
+    add x23, _cpu, #CPU_x0
+    ldr x12, [x23, x9, lsl #3]
     add _addr, x12, x10
     and _addr, _addr, #0xffffffffffff
     mov x24, _addr
     read_prep 8, load8_imm_signed_fast_1
     ldrb w0, [_addr]
     and x8, x22, #0x1f
-    str x0, [x11, x8, lsl #3]
+    str x0, [x23, x8, lsl #3]
     gret
     read_bullshit 8, load8_imm_signed_fast_1
 
@@ -130,15 +130,15 @@
     add _pc, _pc, #8
     ubfx x9, x22, #8, #5
     asr x10, x22, #16
-    add x11, _cpu, #CPU_x0
-    ldr x12, [x11, x9, lsl #3]
+    add x23, _cpu, #CPU_x0
+    ldr x12, [x23, x9, lsl #3]
     add _addr, x12, x10
     and _addr, _addr, #0xffffffffffff
     mov x24, _addr
     read_prep 16, load16_imm_signed_fast_1
     ldrh w0, [_addr]
     and x8, x22, #0x1f
-    str x0, [x11, x8, lsl #3]
+    str x0, [x23, x8, lsl #3]
     gret
     read_bullshit 16, load16_imm_signed_fast_1
 
@@ -147,15 +147,15 @@
     add _pc, _pc, #8
     ubfx x9, x22, #8, #5
     asr x10, x22, #16
-    add x11, _cpu, #CPU_x0
-    ldr x12, [x11, x9, lsl #3]
+    add x23, _cpu, #CPU_x0
+    ldr x12, [x23, x9, lsl #3]
     add _addr, x12, x10
     and _addr, _addr, #0xffffffffffff
     mov x24, _addr
     read_prep 32, load32_imm_signed_fast_1
     ldr w0, [_addr]
     and x8, x22, #0x1f
-    str x0, [x11, x8, lsl #3]
+    str x0, [x23, x8, lsl #3]
     gret
     read_bullshit 32, load32_imm_signed_fast_1
 
@@ -164,15 +164,15 @@
     add _pc, _pc, #8
     ubfx x9, x22, #8, #5
     asr x10, x22, #16
-    add x11, _cpu, #CPU_x0
-    ldr x12, [x11, x9, lsl #3]
+    add x23, _cpu, #CPU_x0
+    ldr x12, [x23, x9, lsl #3]
     add _addr, x12, x10
     and _addr, _addr, #0xffffffffffff
     mov x24, _addr
     read_prep 64, load64_imm_signed_fast_1
     ldr _tmp, [_addr]
     and x8, x22, #0x1f
-    str _tmp, [x11, x8, lsl #3]
+    str _tmp, [x23, x8, lsl #3]
     gret
     read_bullshit 64, load64_imm_signed_fast_1
 
@@ -418,15 +418,15 @@
 /*
  * Store gadgets with inline TLB lookup
  * Address should be in _addr (x7), value in _tmp (x0)
- * write_prep uses x8-x10, preserving x0 (the value) and x11+
+ * write_prep uses x8-x11, so values that must survive it live in x23.
  */
 
 // STR Xn, [addr] - 64-bit store (inline TLB)
 .gadget store64
     mov x24, _addr
-    mov x11, x0              // save 64-bit value (x11 not clobbered by write_prep)
+    mov x23, x0
     write_prep 64, store64_1
-    str x11, [_addr]
+    str x23, [_addr]
     write_done 64, store64_1
     mov _addr, x24
     gret
@@ -435,9 +435,9 @@
 // STR Wn, [addr] - 32-bit store (inline TLB)
 .gadget store32
     mov x24, _addr
-    mov w11, w0
+    mov w23, w0
     write_prep 32, store32_1
-    str w11, [_addr]
+    str w23, [_addr]
     write_done 32, store32_1
     mov _addr, x24
     gret
@@ -446,9 +446,9 @@
 // STRH Wn, [addr] - 16-bit store (inline TLB)
 .gadget store16
     mov x24, _addr
-    mov w11, w0
+    mov w23, w0
     write_prep 16, store16_1
-    strh w11, [_addr]
+    strh w23, [_addr]
     write_done 16, store16_1
     mov _addr, x24
     gret
@@ -457,9 +457,9 @@
 // STRB Wn, [addr] - 8-bit store (inline TLB)
 .gadget store8
     mov x24, _addr
-    mov w11, w0
+    mov w23, w0
     write_prep 8, store8_1
-    strb w11, [_addr]
+    strb w23, [_addr]
     write_done 8, store8_1
     mov _addr, x24
     gret
@@ -740,15 +740,15 @@
     add _pc, _pc, #8
     ubfx x9, x22, #8, #5       // rn (guaranteed != 31)
     lsr x10, x22, #16           // offset (unsigned)
-    add x11, _cpu, #CPU_x0
-    ldr x12, [x11, x9, lsl #3]  // load base (no SP check)
+    add x23, _cpu, #CPU_x0
+    ldr x12, [x23, x9, lsl #3]  // load base (no SP check)
     add _addr, x12, x10
     and _addr, _addr, #0xffffffffffff
     mov x24, _addr               // save for crosspage slow path
     read_prep 64, load64_imm_fast_1
     ldr _tmp, [_addr]
     and x8, x22, #0x1f          // rd (guaranteed != 31)
-    str _tmp, [x11, x8, lsl #3] // x11 survives read_prep
+    str _tmp, [x23, x8, lsl #3]
     gret
     read_bullshit 64, load64_imm_fast_1
 
@@ -758,15 +758,15 @@
     add _pc, _pc, #8
     ubfx x9, x22, #8, #5
     lsr x10, x22, #16
-    add x11, _cpu, #CPU_x0
-    ldr x12, [x11, x9, lsl #3]
+    add x23, _cpu, #CPU_x0
+    ldr x12, [x23, x9, lsl #3]
     add _addr, x12, x10
     and _addr, _addr, #0xffffffffffff
     mov x24, _addr
     read_prep 32, load32_imm_fast_1
     ldr w0, [_addr]
     and x8, x22, #0x1f
-    str x0, [x11, x8, lsl #3]   // x11 survives read_prep
+    str x0, [x23, x8, lsl #3]
     gret
     read_bullshit 32, load32_imm_fast_1
 
@@ -814,15 +814,15 @@
     add _pc, _pc, #8
     ubfx x9, x22, #8, #5       // rn (guaranteed != 31)
     lsr x10, x22, #16           // offset (unsigned)
-    add x11, _cpu, #CPU_x0
-    ldr x12, [x11, x9, lsl #3]  // load base (no SP check)
+    add x23, _cpu, #CPU_x0
+    ldr x12, [x23, x9, lsl #3]  // load base (no SP check)
     add _addr, x12, x10
     and _addr, _addr, #0xffffffffffff
     mov x24, _addr
     read_prep 16, load16_imm_fast_1
     ldrh w0, [_addr]
     and x8, x22, #0x1f          // rd (guaranteed != 31)
-    str x0, [x11, x8, lsl #3]   // x11 survives read_prep
+    str x0, [x23, x8, lsl #3]
     gret
     read_bullshit 16, load16_imm_fast_1
 
@@ -832,15 +832,15 @@
     add _pc, _pc, #8
     ubfx x9, x22, #8, #5
     lsr x10, x22, #16
-    add x11, _cpu, #CPU_x0
-    ldr x12, [x11, x9, lsl #3]
+    add x23, _cpu, #CPU_x0
+    ldr x12, [x23, x9, lsl #3]
     add _addr, x12, x10
     and _addr, _addr, #0xffffffffffff
     mov x24, _addr
     read_prep 8, load8_imm_fast_1
     ldrb w0, [_addr]
     and x8, x22, #0x1f
-    str x0, [x11, x8, lsl #3]   // x11 survives read_prep
+    str x0, [x23, x8, lsl #3]
     gret
     read_bullshit 8, load8_imm_fast_1
 
@@ -900,11 +900,11 @@
     add _addr, x12, x10
     and _addr, _addr, #0xffffffffffff
     mov x24, _addr
-    add x11, _cpu, #CPU_x0      // pre-compute, survives read_prep
+    add x23, _cpu, #CPU_x0
     read_prep 64, load64_sp_imm_1
     ldr _tmp, [_addr]
     and x8, x22, #0x1f          // rd (guaranteed != 31)
-    str _tmp, [x11, x8, lsl #3]
+    str _tmp, [x23, x8, lsl #3]
     gret
     read_bullshit 64, load64_sp_imm_1
 
@@ -917,11 +917,11 @@
     add _addr, x12, x10
     and _addr, _addr, #0xffffffffffff
     mov x24, _addr
-    add x11, _cpu, #CPU_x0      // pre-compute, survives read_prep
+    add x23, _cpu, #CPU_x0
     read_prep 32, load32_sp_imm_1
     ldr w0, [_addr]
     and x8, x22, #0x1f
-    str x0, [x11, x8, lsl #3]   // zero-extended 32→64
+    str x0, [x23, x8, lsl #3]   // zero-extended 32→64
     gret
     read_bullshit 32, load32_sp_imm_1
 
@@ -1626,8 +1626,8 @@ atomic_cas_segfault:
     add _pc, _pc, #8
     ubfx x9, x22, #16, #5          // rn
     sbfx x10, x22, #24, #16        // signed offset
-    add x11, _cpu, #CPU_x0
-    ldr x12, [x11, x9, lsl #3]     // base (no SP check)
+    add x27, _cpu, #CPU_x0
+    ldr x12, [x27, x9, lsl #3]     // base (no SP check)
     add _addr, x12, x10
     and _addr, _addr, #0xffffffffffff
     mov x24, _addr
@@ -1636,8 +1636,8 @@ atomic_cas_segfault:
     ldr x25, [_addr, #8]
     and x8, x22, #0x1f              // rt
     ubfx x9, x22, #8, #5            // rt2
-    str x23, [x11, x8, lsl #3]     // x11 survives read_prep
-    str x25, [x11, x9, lsl #3]
+    str x23, [x27, x8, lsl #3]
+    str x25, [x27, x9, lsl #3]
     gret
     read_bullshit 128, ldp64_imm_fast_1
 
@@ -1682,7 +1682,7 @@ atomic_cas_segfault:
  *   x22 = packed param (preserved across read_prep/write_prep — caller-saved
  *         normally, but read_prep/write_prep don't call C unless we hit the
  *         bullshit path. callee-saved inside the gadget body is x19-x28).
- *   x11 = &cpu->x[0]        — clobbered by read_prep (uses x8-x10), so we
+ *   x11 = &cpu->x[0]        — clobbered by read_prep/write_prep (uses x8-x11), so we
  *         re-form `add x11, _cpu, #CPU_x0` after the prep.
  *   x23, x25 = loaded values (callee-saved per asbestos gadget convention).
  *   x24 = saved guest addr (used by crosspage path; do not reuse).
@@ -2184,8 +2184,8 @@ atomic_cas_segfault:
     add _pc, _pc, #8
     ubfx x9, x22, #16, #5          // rn
     sbfx x10, x22, #24, #16        // signed offset
-    add x11, _cpu, #CPU_x0
-    ldr x12, [x11, x9, lsl #3]     // base (no SP check)
+    add x27, _cpu, #CPU_x0
+    ldr x12, [x27, x9, lsl #3]     // base (no SP check)
     add _addr, x12, x10
     and _addr, _addr, #0xffffffffffff
     mov x24, _addr
@@ -2194,8 +2194,8 @@ atomic_cas_segfault:
     ldr w25, [_addr, #4]
     and x8, x22, #0x1f              // rt
     ubfx x9, x22, #8, #5            // rt2
-    str x23, [x11, x8, lsl #3]     // x11 survives read_prep
-    str x25, [x11, x9, lsl #3]
+    str x23, [x27, x8, lsl #3]
+    str x25, [x27, x9, lsl #3]
     gret
     read_bullshit 64, ldp32_imm_fast_1
 
@@ -3020,11 +3020,11 @@ ld4r_store_64:
     lsl x10, x23, #4
     add x9, x9, x10
     add x9, x9, x25
-    ldrb w11, [x9]
+    ldrb w23, [x9]
 
     mov x24, _addr
     write_prep 8, st1_single_b_1
-    strb w11, [_addr]
+    strb w23, [_addr]
     write_done 8, st1_single_b_1
     mov _addr, x24
     gret
@@ -3043,11 +3043,11 @@ ld4r_store_64:
     lsl x10, x23, #4
     add x9, x9, x10
     add x9, x9, x25
-    ldrh w11, [x9]
+    ldrh w23, [x9]
 
     mov x24, _addr
     write_prep 16, st1_single_h_1
-    strh w11, [_addr]
+    strh w23, [_addr]
     write_done 16, st1_single_h_1
     mov _addr, x24
     gret
@@ -3066,11 +3066,11 @@ ld4r_store_64:
     lsl x10, x23, #4
     add x9, x9, x10
     add x9, x9, x25
-    ldr w11, [x9]
+    ldr w23, [x9]
 
     mov x24, _addr
     write_prep 32, st1_single_s_1
-    str w11, [_addr]
+    str w23, [_addr]
     write_done 32, st1_single_s_1
     mov _addr, x24
     gret
@@ -3089,11 +3089,11 @@ ld4r_store_64:
     lsl x10, x23, #4
     add x9, x9, x10
     add x9, x9, x25
-    ldr x11, [x9]
+    ldr x23, [x9]
 
     mov x24, _addr
     write_prep 64, st1_single_d_1
-    str x11, [_addr]
+    str x23, [_addr]
     write_done 64, st1_single_d_1
     mov _addr, x24
     gret
@@ -3110,18 +3110,18 @@ ld4r_store_64:
     add _pc, _pc, #8
 
     and x23, x22, #0x1f        // rt
-    ubfx x11, x22, #8, #2      // size (0=8b, 1=16b, 2=32b, 3=64b)
+    ubfx x25, x22, #8, #2      // size (0=8b, 1=16b, 2=32b, 3=64b)
 
     // Inline TLB read - use read_prep for size 32 (we'll handle actual size in load)
     mov x24, _addr
     read_prep 32, ldxr_1
 
     // Load based on size
-    cmp x11, #3
+    cmp x25, #3
     b.eq ldxr_load64
-    cmp x11, #2
+    cmp x25, #2
     b.eq ldxr_load32
-    cmp x11, #1
+    cmp x25, #1
     b.eq ldxr_load16
     // size 0: 8-bit
     ldrb w0, [_addr]
@@ -3518,4 +3518,3 @@ atomic_casp_segfault:
     lsr x20, x20, #32
     str w20, [x9, #8]           // W(s+1) = old_hi
 5:  gret
-
