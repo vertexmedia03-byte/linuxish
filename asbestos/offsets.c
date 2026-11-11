@@ -3,6 +3,15 @@
 #include "emu/cpu.h"
 #include "emu/tlb.h"
 
+#ifdef GUEST_ARM64
+_Static_assert((offsetof(struct tlb, block_cache) -
+        offsetof(struct tlb, entries)) % 4096 == 0,
+        "ARM64 block-cache offset must be page aligned from TLB entries");
+_Static_assert((offsetof(struct tlb, block_cache_gen) -
+        offsetof(struct tlb, block_cache)) % 4096 == 0,
+        "ARM64 block-cache generation offset must be page aligned");
+#endif
+
 void cpu() {
 #if defined(GUEST_X86) || !defined(GUEST_ARM64)
     // x86 register offsets
@@ -133,6 +142,8 @@ void cpu() {
 #endif
     OFFSET(TLB, tlb, block_cache);      // inline indirect-branch target cache
     OFFSET(TLB, tlb, block_cache_gen);
+    OFFSET(MMU, mmu, asbestos);
+    OFFSET(ASBESTOS, asbestos, invalidate_gen);
     OFFSET(TLB_ENTRY, tlb_entry, page);
     OFFSET(TLB_ENTRY, tlb_entry, page_if_writable);
     OFFSET(TLB_ENTRY, tlb_entry, data_minus_addr);

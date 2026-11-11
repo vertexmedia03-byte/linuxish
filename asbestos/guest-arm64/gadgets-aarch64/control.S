@@ -61,6 +61,45 @@
 .endm
 
 /*
+ * Resolve an indirect guest target through the dispatch loop's validated
+ * block cache. A miss keeps the normal fiber_ret dispatch path.
+ */
+.macro indirect_chain target, miss_label
+#ifdef DISABLE_BLOCK_CHAINING
+    b \miss_label
+#else
+    add x11, _tlb, #((TLB_block_cache - TLB_entries) >> 12), lsl #12
+    add x12, x11, #((TLB_block_cache_gen - TLB_block_cache) >> 12), lsl #12
+    ldr w12, [x12]
+    ldr x13, [_tlb, #-TLB_entries]
+    ldr x13, [x13, #MMU_asbestos]
+    ldr w13, [x13, #ASBESTOS_invalidate_gen]
+    cmp w12, w13
+    b.ne \miss_label
+
+    eor x12, \target, \target, lsr #12
+    and x12, x12, #0xfff
+    ldr x11, [x11, x12, lsl #3]
+    cbz x11, \miss_label
+    ldr x12, [x11, #FIBER_BLOCK_addr]
+    cmp x12, \target
+    b.ne \miss_label
+
+    ldr w14, [_cpu, #CPU_cycle]
+    add w14, w14, #1
+    str w14, [_cpu, #CPU_cycle]
+    tst w14, #0x3ff
+    b.eq \miss_label
+    ldr x14, [_cpu, #CPU_poked_ptr]
+    ldrb w14, [x14]
+    cbnz w14, \miss_label
+
+    add _pc, x11, #FIBER_BLOCK_code
+    b fiber_ret_chain
+#endif
+.endm
+
+/*
  * Unconditional branch (B)
  * Code stream: [gadget addr][fake_target (64-bit)]
  *
@@ -113,7 +152,8 @@
  * Branch to register (BR)
  * Code stream: [gadget addr][rn (64-bit)]
  *
- * Indirect branch - always returns to main loop since we don't know the target.
+ * A cached indirect target can continue through fiber_ret_chain; misses use
+ * the normal dispatch path.
  */
 .gadget branch_reg
     ldr x8, [_pc]           // rn
@@ -127,7 +167,8 @@
     // neither should land in cpu->pc uncleaned.
     and x10, x10, #0xffffffffffff
     str x10, [_cpu, #CPU_pc]
-    // Indirect branch: always return to main loop
+    indirect_chain x10, 1f
+1:
     b fiber_ret
 
 /*
@@ -157,6 +198,8 @@
     // Mask to 48-bit (see branch_reg for rationale)
     and x10, x10, #0xffffffffffff
     str x10, [_cpu, #CPU_pc]
+    indirect_chain x10, 1f
+1:
     b fiber_ret
 #else
 /*
@@ -177,7 +220,8 @@
     // Mask to 48-bit (see branch_reg for rationale)
     and x10, x10, #0xffffffffffff
     str x10, [_cpu, #CPU_pc]
-    // Indirect branch: always return to main loop
+    indirect_chain x10, 1f
+1:
     b fiber_ret
 #endif
 
