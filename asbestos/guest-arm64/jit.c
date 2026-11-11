@@ -4177,12 +4177,7 @@ static void jit_init(void) {
     simd_on = !env_off("ISH_JIT_SIMD");
     pin_on = !env_off("ISH_JIT_PIN");
     dirty_on = !env_off("ISH_JIT_DIRTY");
-#if TARGET_OS_OSX
     tlb_stale_check = !env_off("ISH_JIT_TLB_STALE");
-#else
-    tlb_stale_check = getenv("ISH_JIT_TLB_STALE") != NULL &&
-                      !env_off("ISH_JIT_TLB_STALE");
-#endif
     if (!tlb_stale_check)
         fprintf(stderr, "JIT: unsafe fast TLB mode skips per-access remap checks\n");
     // AOT images are PIC code, so PIC is the default once one is linked in.

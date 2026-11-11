@@ -23,8 +23,8 @@
 // environment turns the translator off at run time (the BLR code stream keeps
 // its JIT layout). Tuning / diagnostics: ISH_JIT_PIN=0, ISH_JIT_LINK=0,
 // ISH_JIT_LOOP=0, ISH_JIT_SIMD=0, ISH_JIT_DIRTY=0 (eagerly spill lazy
-// registers), ISH_JIT_TLB_STALE=1 (enable per-access remap checks; disabled by
-// default on iOS, where skipped checks can use stale mappings during remaps),
+// registers), ISH_JIT_TLB_STALE=0 (skip per-access remap checks; unsafe because
+// stale mappings can be used during remaps),
 // ISH_JIT_STATS=1, ISH_JIT_DUMP=<file>,
 // ISH_JIT_MAP=<file> (native code -> guest module and file offset).
 //
