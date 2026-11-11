@@ -5,7 +5,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <time.h>
-#include <pthread.h>
 #include "asbestos/asbestos.h"
 #include "asbestos/gen.h"
 #include "asbestos/frame.h"
@@ -59,49 +58,26 @@ __thread volatile addr_t jit_saved_pc;  // block start PC, read by signal handle
 #define PC_TRACE_MAX 4096
 static uint64_t g_pc_trace[PC_TRACE_MAX];
 static _Atomic int g_pc_trace_n;
-static int g_pc_trace_enabled;
+static int g_pc_trace_enabled = -1;
 static uint64_t g_pc_trace_lo, g_pc_trace_hi;
 
-static int no_block_cache, no_jit_reuse, no_chain, no_retcache;
-static int dispatch_count_enabled;
-static pthread_once_t dispatch_options_once = PTHREAD_ONCE_INIT;
-
-static inline int pc_fine_on(void);
-static inline int pc_hist_on(void);
-static inline int blk_prof_on(void);
-
-static void dispatch_options_init(void) {
-    const char *e = getenv("ISH_NO_BLOCK_CACHE");
-    no_block_cache = e ? atoi(e) : 0;
-    e = getenv("ISH_NO_JIT_REUSE");
-    no_jit_reuse = (e && e[0] == '1') ? 1 : 0;
-    e = getenv("ISH_NO_CHAIN");
-    no_chain = (e && e[0] == '1') ? 1 : 0;
-    e = getenv("ISH_NO_RETCACHE");
-    no_retcache = (e && e[0] == '1') ? 1 : 0;
-    e = getenv("ISH_DISPATCH_COUNT");
-    dispatch_count_enabled = (e && e[0] == '1') || stage_trace_on();
-    (void) pc_fine_on();
-    (void) pc_hist_on();
-    (void) blk_prof_on();
-
-    g_pc_trace_enabled = getenv("ISH_PC_TRACE_FILE") != NULL;
-    const char *range = getenv("ISH_PC_TRACE_RANGE");
-    if (range) {
-        unsigned long long lo, hi;
-        if (sscanf(range, "%llx-%llx", &lo, &hi) == 2) {
-            g_pc_trace_lo = lo;
-            g_pc_trace_hi = hi;
+static inline void pc_trace_record(uint64_t pc) {
+    if (g_pc_trace_enabled == -1) {
+        const char *path = getenv("ISH_PC_TRACE_FILE");
+        g_pc_trace_enabled = path ? 1 : 0;
+        const char *r = getenv("ISH_PC_TRACE_RANGE");
+        if (r) {
+            unsigned long long lo, hi;
+            if (sscanf(r, "%llx-%llx", &lo, &hi) == 2) {
+                g_pc_trace_lo = lo; g_pc_trace_hi = hi;
+            }
+        }
+        if (g_pc_trace_lo == 0) {
+            g_pc_trace_lo = 0xee900000ULL;
+            g_pc_trace_hi = 0xee940000ULL;
         }
     }
-    if (g_pc_trace_lo == 0) {
-        g_pc_trace_lo = 0xee900000ULL;
-        g_pc_trace_hi = 0xee940000ULL;
-    }
-}
-
-static inline void pc_trace_record(uint64_t pc) {
-    if (!g_pc_trace_enabled) return;
+    if (g_pc_trace_enabled <= 0) return;
     if (pc < g_pc_trace_lo || pc >= g_pc_trace_hi) return;
     int n = atomic_fetch_add_explicit(&g_pc_trace_n, 1, memory_order_relaxed);
     if (n < PC_TRACE_MAX) g_pc_trace[n] = pc;
@@ -864,10 +840,6 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
     frame->last_block = NULL;
     frame->cpu = *cpu;
     assert(asbestos->mmu == cpu->mmu);
-    pthread_once(&dispatch_options_once, dispatch_options_init);
-#ifdef GUEST_ARM64
-    bool symbol_offload_active = native_offload_sym_active();
-#endif
 
     int interrupt = INT_NONE;
     int crash_retry_count = 0;
@@ -954,9 +926,9 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
         // If a native handler is registered for this guest PC, run it instead
         // of compiling/dispatching the guest function. Lossless: when nothing
         // is registered, no target matches, or a handler declines, we fall
-        // through to the normal gadget path below. Registration is checked
-        // once per run-loop entry, not once per dispatched block.
-        if (symbol_offload_active) {
+        // through to the normal gadget path below. No env gate — the scan is
+        // skipped entirely unless a target is registered (native_offload_sym_active).
+        if (native_offload_sym_active()) {
             // Refresh TLB before any bypass translation: after fork/mmap the
             // page table may have changed and stale entries point into the
             // parent's CoW pages. Handlers do value-copy that needs fresh TLB.
@@ -991,8 +963,18 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
             // ISH_NO_BLOCK_CACHE=2: never reuse a translated block — compile a
             // fresh one on every dispatch (diagnostic tool for stale-translation
             // hypotheses; the old blocks pile up in the hash until jetsam).
+            static int no_block_cache = -1;
+            if (no_block_cache == -1) {
+                const char *e = getenv("ISH_NO_BLOCK_CACHE");
+                no_block_cache = e ? atoi(e) : 0;
+            }
             // ISH_NO_JIT_REUSE=1: compile fresh for guest-JIT-pool addresses
             // only (diagnostic: localizes stale-translation suspects).
+            static int no_jit_reuse = -1;
+            if (no_jit_reuse == -1) {
+                const char *e = getenv("ISH_NO_JIT_REUSE");
+                no_jit_reuse = (e && e[0] == '1') ? 1 : 0;
+            }
             size_t cache_index = fiber_cache_hash(ip);
             block = cache[cache_index];
             if (no_block_cache >= 2 ||
@@ -1041,9 +1023,19 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
         }
         // ISH_NO_CHAIN=1: never patch direct-jump chains between blocks, so
         // every block exit returns to this dispatch loop (diagnostic).
+        static int no_chain = -1;
+        if (no_chain == -1) {
+            const char *e = getenv("ISH_NO_CHAIN");
+            no_chain = (e && e[0] == '1') ? 1 : 0;
+        }
         // ISH_NO_RETCACHE=1: flush the per-frame return-target cache before
         // every dispatch so `ret` gadgets can never jump via a cached entry
         // (diagnostic).
+        static int no_retcache = -1;
+        if (no_retcache == -1) {
+            const char *e = getenv("ISH_NO_RETCACHE");
+            no_retcache = (e && e[0] == '1') ? 1 : 0;
+        }
         if (no_retcache)
             memset(frame->ret_cache, 0, sizeof(frame->ret_cache));
         struct fiber_block *last_block = no_chain ? NULL : frame->last_block;
@@ -1098,12 +1090,21 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
         // The signal handler reads this to restore cpu->pc on SIGSEGV.
         jit_saved_pc = frame->cpu.pc;
 
-        if (blk_prof_enabled && block != NULL)
+        if (blk_prof_on() && block != NULL)
             blk_prof_record(blk_prof_key(tlb, block->addr), (block->end_addr - block->addr) >> 2);
 
-        // Count dispatch-loop iterations only when explicitly enabled.
-        if (dispatch_count_enabled)
-            atomic_fetch_add_explicit(&s_dispatch_iterations, 1, memory_order_relaxed);
+        // Count dispatch-loop iterations (gated). Cached env check.
+        {
+            static int g_dispatch_count = -1;
+            extern _Atomic uint64_t s_dispatch_iterations;
+            if (g_dispatch_count == -1) {
+                const char *e = getenv("ISH_DISPATCH_COUNT");
+                extern int stage_trace_on(void);
+                g_dispatch_count = ((e && e[0] == '1') || stage_trace_on()) ? 1 : 0;
+            }
+            if (g_dispatch_count)
+                atomic_fetch_add_explicit(&s_dispatch_iterations, 1, memory_order_relaxed);
+        }
 
 #ifdef ISH_JIT
         jit_exec_ready();
@@ -1226,14 +1227,14 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
         // chained and becomes invisible, biasing the histogram TOWARD V8.
         // Therefore the V8 share measured here is a lower bound on V8's
         // true insn-level share.
-        if (pc_hist_enabled && frame->last_block != NULL) {
+        if (pc_hist_on() && frame->last_block != NULL) {
             struct fiber_block *b = frame->last_block;
             uint64_t pc = b->addr;
             uint64_t weight = (b->end_addr - b->addr) >> 2;  // insns
             if (weight == 0) weight = 1;
             if (pc < ((uint64_t)PC_HIST_BUCKETS << PC_HIST_SHIFT))
                 atomic_fetch_add_explicit(&pc_hist[pc >> PC_HIST_SHIFT], weight, memory_order_relaxed);
-            if (pc_hist_fine_on && pc >= PC_HIST_FINE_BASE) {
+            if (pc_fine_on() && pc >= PC_HIST_FINE_BASE) {
                 uint64_t fi = (pc - PC_HIST_FINE_BASE) >> PC_HIST_FINE_SHIFT;
                 if (fi < PC_HIST_FINE_N)
                     atomic_fetch_add_explicit(&pc_hist_fine[fi], weight, memory_order_relaxed);

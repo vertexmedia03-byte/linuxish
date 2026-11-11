@@ -100,10 +100,8 @@ void mem_destroy(struct mem *mem) {
     wrlock_destroy(&mem->lock);
 }
 
-// Navigate 4-level page table to find the L3 page array, creating intermediate
-// nodes as needed. Range mappers can reuse the returned array across all pages
-// in the same 512-page region rather than walking the tree for every page.
-static struct pt_entry *mem_pt_l3_new(struct mem *mem, page_t page) {
+// Navigate 4-level page table to find L3 entry, creating intermediate nodes as needed
+static struct pt_entry *mem_pt_new(struct mem *mem, page_t page) {
     struct pt_node *l0 = mem->pgdir;
     int i0 = PT_INDEX(page, 0);
     struct pt_node *l1 = l0->children[i0];
@@ -122,12 +120,8 @@ static struct pt_entry *mem_pt_l3_new(struct mem *mem, page_t page) {
     if (l3 == NULL)
         l3 = l2->children[i2] = calloc(PT_ENTRIES, sizeof(struct pt_entry));
 
-    return l3;
-}
-
-static struct pt_entry *mem_pt_new(struct mem *mem, page_t page) {
-    struct pt_entry *l3 = mem_pt_l3_new(mem, page);
-    return &l3[PT_INDEX(page, 3)];
+    int i3 = PT_INDEX(page, 3);
+    return &l3[i3];
 }
 
 struct pt_entry *mem_pt(struct mem *mem, page_t page) {
@@ -603,25 +597,6 @@ int pt_map(struct mem *mem, page_t start, pages_t pages, void *memory, size_t of
 #endif
     };
 
-#ifdef GUEST_ARM64
-    page_t end = start + pages;
-    for (page_t page = start; page < end;) {
-        struct pt_entry *pt = mem_pt_l3_new(mem, page) + PT_INDEX(page, 3);
-        page_t l3_end = ((page >> PT_BITS) + 1) << PT_BITS;
-        if (l3_end > end)
-            l3_end = end;
-        do {
-            if (pt->data != NULL)
-                pt_unmap(mem, page, 1);
-            data->refcount++;
-            pt->data = data;
-            pt->offset = ((page - start) << PAGE_BITS) + offset;
-            pt->flags = flags;
-            pt++;
-            page++;
-        } while (page < l3_end);
-    }
-#else
     for (page_t page = start; page < start + pages; page++) {
         if (mem_pt(mem, page) != NULL)
             pt_unmap(mem, page, 1);
@@ -632,7 +607,6 @@ int pt_map(struct mem *mem, page_t start, pages_t pages, void *memory, size_t of
         pt->flags = flags;
 
     }
-#endif
     return 0;
 }
 

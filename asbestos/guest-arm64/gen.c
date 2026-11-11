@@ -30,6 +30,15 @@
 #include "emu/arch/arm64/decode.h"
 #include "emu/interrupt.h"
 
+// The Py_DECREF / Py_INCREF peephole-fusion fast paths below emit gadget_decref
+// / gadget_incref, whose implementations live in control.S. Those gadgets are
+// still a work in progress and are NOT yet committed, so building them in would
+// leave an undefined reference and break a clean-checkout link. Keep the fusions
+// disabled until the control.S side is finished and committed; then delete these
+// two defines (or build with -U...) to re-enable the optimization.
+#define DISABLE_DECREF_FUSION 1
+#define DISABLE_INCREF_FUSION 1
+
 // Gadget declarations
 extern void gadget_interrupt(void);
 extern void gadget_exit(void);
@@ -1026,13 +1035,12 @@ int gen_step(struct gen_state *state, struct tlb *tlb) {
             int str_ok  = (i4 & 0xffc003ff) == (0xf9000000u | (obj << 5) | r) &&
                           ((i4 >> 10) & 0xfff) == 0;                // str Xr,[Xobj]
             int cbnz_ok = (i5 & 0xff00001f) == (0xb5000000u | r);   // cbnz Xr,*
-            if (r != 31 && tbnz_ok && sub_ok && str_ok && cbnz_ok) {
+            if (tbnz_ok && sub_ok && str_ok && cbnz_ok) {
                 int64_t tbnz_off = arm64_sign_extend((int64_t)(((i2 >> 5) & 0x3fff)) << 2, 16);
                 addr_t skip = state->ip + tbnz_off;   // tbnz PC = state->ip (post-LDR)
                 addr_t dealloc = p5;                  // insn after cbnz (fallthrough)
                 extern void gadget_decref(void);
                 gen(state, (unsigned long) gadget_decref);
-                gen(state, r);
                 gen(state, obj);
                 gen(state, (unsigned long)(skip | (1ULL << 63)));
                 gen(state, (unsigned long)(dealloc | (1ULL << 63)));
@@ -1074,10 +1082,9 @@ int gen_step(struct gen_state *state, struct tlb *tlb) {
             int64_t beq_off = arm64_sign_extend((int64_t)(((j3 >> 5) & 0x7ffff)) << 2, 21);
             addr_t beq_target = (state->ip + 4) + beq_off;
             addr_t after_str = q5;   // instruction after the str (fall-through)
-            if (r != 31 && adds_ok && beq_ok && str_ok && beq_target == after_str) {
+            if (adds_ok && beq_ok && str_ok && beq_target == after_str) {
                 extern void gadget_incref(void);
                 gen(state, (unsigned long) gadget_incref);
-                gen(state, r);
                 gen(state, obj);
                 state->ip = q5;      // consumed ldr+adds+b.eq+str
                 return 1;
