@@ -384,6 +384,20 @@ static void fiber_block_free(struct asbestos *asbestos, struct fiber_block *bloc
 static void fiber_free_jetsam(struct asbestos *asbestos);
 static void fiber_resize_hash(struct asbestos *asbestos, size_t new_size);
 
+#define FIBER_PAGE_EMPTY ((page_t) BAD_PAGE)
+#define FIBER_PAGE_DELETED ((page_t) (BAD_PAGE + 1))
+
+struct fiber_page_entry {
+    _Atomic page_t page;
+    struct list blocks[2];
+};
+
+struct fiber_page_table {
+    size_t size;
+    struct fiber_page_table *retired_next;
+    struct fiber_page_entry entries[];
+};
+
 static _Atomic unsigned next_invalidate_gen = 1;
 
 static unsigned asbestos_next_invalidate_gen(void) {
@@ -393,12 +407,168 @@ static unsigned asbestos_next_invalidate_gen(void) {
     return gen;
 }
 
+static struct fiber_page_table *fiber_page_table_new(size_t size) {
+    if (size > (SIZE_MAX - sizeof(struct fiber_page_table)) /
+            sizeof(struct fiber_page_entry))
+        return NULL;
+    struct fiber_page_table *table =
+        calloc(1, sizeof(*table) + size * sizeof(table->entries[0]));
+    if (table == NULL)
+        return NULL;
+    table->size = size;
+    for (size_t i = 0; i < size; i++) {
+        atomic_init(&table->entries[i].page, FIBER_PAGE_EMPTY);
+        list_init(&table->entries[i].blocks[0]);
+        list_init(&table->entries[i].blocks[1]);
+    }
+    return table;
+}
+
+static size_t fiber_page_hash(page_t page, size_t size) {
+    uint64_t value = page;
+    value ^= value >> 30;
+    value *= UINT64_C(0xbf58476d1ce4e5b9);
+    value ^= value >> 27;
+    value *= UINT64_C(0x94d049bb133111eb);
+    value ^= value >> 31;
+    return (size_t) value & (size - 1);
+}
+
+static struct fiber_page_entry *fiber_page_table_find(
+        struct fiber_page_table *table, page_t page, bool for_insert) {
+    if (table == NULL)
+        return NULL;
+    size_t index = fiber_page_hash(page, table->size);
+    struct fiber_page_entry *deleted = NULL;
+    for (size_t probe = 0; probe < table->size; probe++) {
+        struct fiber_page_entry *entry = &table->entries[index];
+        page_t key = atomic_load_explicit(&entry->page, memory_order_acquire);
+        if (key == page)
+            return entry;
+        if (key == FIBER_PAGE_DELETED) {
+            if (deleted == NULL)
+                deleted = entry;
+        } else if (key == FIBER_PAGE_EMPTY) {
+            return for_insert && deleted != NULL ? deleted :
+                   (for_insert ? entry : NULL);
+        }
+        index = (index + 1) & (table->size - 1);
+    }
+    return for_insert ? deleted : NULL;
+}
+
+static struct fiber_page_entry *fiber_page_lookup(struct asbestos *asbestos,
+                                                    page_t page) {
+    struct fiber_page_table *table =
+        atomic_load_explicit(&asbestos->page_table, memory_order_acquire);
+    return fiber_page_table_find(table, page, false);
+}
+
+static void fiber_page_index_disable(struct asbestos *asbestos) {
+    bool was_failed = atomic_exchange_explicit(&asbestos->page_index_failed,
+                                               true, memory_order_acq_rel);
+    if (!was_failed)
+        fprintf(stderr, "[asbestos] exact block-page index allocation failed; "
+                        "falling back to full-cache invalidation\n");
+}
+
+static bool fiber_page_table_resize(struct asbestos *asbestos, size_t new_size) {
+    struct fiber_page_table *old =
+        atomic_load_explicit(&asbestos->page_table, memory_order_relaxed);
+    struct fiber_page_table *table = fiber_page_table_new(new_size);
+    if (table == NULL)
+        return false;
+
+    for (size_t i = 0; i < old->size; i++) {
+        struct fiber_page_entry *source = &old->entries[i];
+        page_t page = atomic_load_explicit(&source->page, memory_order_relaxed);
+        if (page == FIBER_PAGE_EMPTY || page == FIBER_PAGE_DELETED)
+            continue;
+        struct fiber_page_entry *dest = fiber_page_table_find(table, page, true);
+        atomic_store_explicit(&dest->page, page, memory_order_relaxed);
+        for (int kind = 0; kind <= 1; kind++) {
+            struct list *head = &source->blocks[kind];
+            while (!list_empty(head)) {
+                struct list *node = head->next;
+                list_remove(node);
+                list_add(&dest->blocks[kind], node);
+            }
+        }
+    }
+
+    atomic_store_explicit(&asbestos->page_table, table, memory_order_release);
+    old->retired_next = asbestos->retired_page_tables;
+    asbestos->retired_page_tables = old;
+    asbestos->page_tombstones = 0;
+    return true;
+}
+
+static bool fiber_page_table_ensure(struct asbestos *asbestos, page_t page) {
+    if (atomic_load_explicit(&asbestos->page_index_failed, memory_order_relaxed))
+        return false;
+    struct fiber_page_table *table =
+        atomic_load_explicit(&asbestos->page_table, memory_order_relaxed);
+    if (fiber_page_table_find(table, page, false) != NULL)
+        return true;
+
+    bool compact = asbestos->page_tombstones > table->size / 4;
+    if ((asbestos->page_count + 1) * 10 >= table->size * 7 || compact) {
+        size_t new_size = compact ? table->size : table->size * 2;
+        if (new_size < table->size ||
+                !fiber_page_table_resize(asbestos, new_size)) {
+            fiber_page_index_disable(asbestos);
+            return false;
+        }
+        table = atomic_load_explicit(&asbestos->page_table, memory_order_relaxed);
+    }
+
+    struct fiber_page_entry *entry = fiber_page_table_find(table, page, true);
+    if (entry == NULL) {
+        if (table->size > SIZE_MAX / 2 ||
+                !fiber_page_table_resize(asbestos, table->size * 2)) {
+            fiber_page_index_disable(asbestos);
+            return false;
+        }
+        table = atomic_load_explicit(&asbestos->page_table, memory_order_relaxed);
+        entry = fiber_page_table_find(table, page, true);
+        if (entry == NULL) {
+            fiber_page_index_disable(asbestos);
+            return false;
+        }
+    }
+
+    page_t old_page = atomic_load_explicit(&entry->page, memory_order_relaxed);
+    if (old_page == FIBER_PAGE_DELETED)
+        asbestos->page_tombstones--;
+    atomic_store_explicit(&entry->page, page, memory_order_release);
+    asbestos->page_count++;
+    return true;
+}
+
+static void fiber_page_table_remove_if_empty(struct asbestos *asbestos,
+                                              page_t page) {
+    struct fiber_page_entry *entry = fiber_page_lookup(asbestos, page);
+    if (entry == NULL || !list_empty(&entry->blocks[0]) ||
+            !list_empty(&entry->blocks[1]))
+        return;
+    atomic_store_explicit(&entry->page, FIBER_PAGE_DELETED, memory_order_release);
+    asbestos->page_count--;
+    asbestos->page_tombstones++;
+}
+
 struct asbestos *asbestos_new(struct mmu *mmu) {
     struct asbestos *asbestos = calloc(1, sizeof(struct asbestos));
     asbestos->mmu = mmu;
     atomic_init(&asbestos->invalidate_gen, asbestos_next_invalidate_gen());
     fiber_resize_hash(asbestos, FIBER_INITIAL_HASH_SIZE);
-    asbestos->page_hash = calloc(FIBER_PAGE_HASH_SIZE, sizeof(*asbestos->page_hash));
+    atomic_init(&asbestos->page_table,
+                fiber_page_table_new(FIBER_PAGE_TABLE_INITIAL_SIZE));
+    atomic_init(&asbestos->page_index_failed,
+                atomic_load_explicit(&asbestos->page_table,
+                                     memory_order_relaxed) == NULL);
+    if (atomic_load_explicit(&asbestos->page_index_failed, memory_order_relaxed))
+        fprintf(stderr, "[asbestos] exact block-page index allocation failed; "
+                        "falling back to full-cache invalidation\n");
     list_init(&asbestos->jetsam);
     lock_init(&asbestos->lock);
     wrlock_init(&asbestos->jetsam_lock);
@@ -420,14 +590,33 @@ void asbestos_free(struct asbestos *asbestos) {
 #ifdef ISH_JIT
     jit_asbestos_free(asbestos);
 #endif
-    free(asbestos->page_hash);
+    struct fiber_page_table *table =
+        atomic_load_explicit(&asbestos->page_table, memory_order_relaxed);
+    free(table);
+    table = asbestos->retired_page_tables;
+    while (table != NULL) {
+        struct fiber_page_table *next = table->retired_next;
+        free(table);
+        table = next;
+    }
     free(asbestos->hash);
     free(asbestos);
 }
 
-static inline struct list *blocks_list(struct asbestos *asbestos, page_t page, int i) {
-    // TODO is this a good hash function?
-    return &asbestos->page_hash[page % FIBER_PAGE_HASH_SIZE].blocks[i];
+static void fiber_invalidate_all_locked(struct asbestos *asbestos,
+                                        bool *did_invalidate) {
+    for (size_t bucket = 0; bucket < asbestos->hash_size; bucket++) {
+        struct list *blocks = &asbestos->hash[bucket];
+        if (list_null(blocks))
+            continue;
+        struct fiber_block *block, *tmp;
+        list_for_each_entry_safe(blocks, block, tmp, chain) {
+            fiber_block_disconnect(asbestos, block);
+            block->is_jetsam = true;
+            list_add(&asbestos->jetsam, &block->jetsam);
+            *did_invalidate = true;
+        }
+    }
 }
 
 void asbestos_invalidate_range(struct asbestos *absestos, page_t start, page_t end) {
@@ -436,24 +625,25 @@ void asbestos_invalidate_range(struct asbestos *absestos, page_t start, page_t e
     // been freed and nulled (see mem_destroy). Treat as no-op — the freed
     // asbestos had already been invalidated by the winning cleanup.
     if (absestos == NULL) return;
+    if (end <= start) return;
     lock(&absestos->lock);
     bool did_invalidate = false;
-    struct fiber_block *block, *tmp;
-    if (end - start >= FIBER_PAGE_HASH_SIZE) {
-        // Every page of a large range maps onto some bucket, and each bucket
-        // holds the blocks of *all* pages congruent to it: walking page by
-        // page would rescan each bucket (end - start) / FIBER_PAGE_HASH_SIZE
-        // times. Sweep every bucket once and keep the blocks whose page is in
-        // range instead.
-        for (size_t b = 0; b < FIBER_PAGE_HASH_SIZE; b++) {
+    struct fiber_page_table *table =
+        atomic_load_explicit(&absestos->page_table, memory_order_relaxed);
+    if (atomic_load_explicit(&absestos->page_index_failed,
+                             memory_order_relaxed) || table == NULL) {
+        fiber_invalidate_all_locked(absestos, &did_invalidate);
+    } else if (end - start >= table->size / 2) {
+        for (size_t slot = 0; slot < table->size; slot++) {
+            struct fiber_page_entry *entry = &table->entries[slot];
+            page_t page = atomic_load_explicit(&entry->page, memory_order_relaxed);
+            if (page == FIBER_PAGE_EMPTY || page == FIBER_PAGE_DELETED ||
+                    page < start || page >= end)
+                continue;
             for (int i = 0; i <= 1; i++) {
-                struct list *blocks = &absestos->page_hash[b].blocks[i];
-                if (list_null(blocks))
-                    continue;
+                struct list *blocks = &entry->blocks[i];
+                struct fiber_block *block, *tmp;
                 list_for_each_entry_safe(blocks, block, tmp, page[i]) {
-                    page_t owner = i == 0 ? PAGE(block->addr) : PAGE(block->end_addr);
-                    if (owner < start || owner >= end)
-                        continue;
                     fiber_block_disconnect(absestos, block);
                     block->is_jetsam = true;
                     list_add(&absestos->jetsam, &block->jetsam);
@@ -461,25 +651,21 @@ void asbestos_invalidate_range(struct asbestos *absestos, page_t start, page_t e
                 }
             }
         }
-        start = end;  // nothing left for the per-page walk
-    }
-    for (page_t page = start; page < end; page++) {
-        for (int i = 0; i <= 1; i++) {
-            struct list *blocks = blocks_list(absestos, page, i);
-            if (list_null(blocks))
+    } else {
+        for (page_t page = start; page < end; page++) {
+            struct fiber_page_entry *entry =
+                fiber_page_table_find(table, page, false);
+            if (entry == NULL)
                 continue;
-            list_for_each_entry_safe(blocks, block, tmp, page[i]) {
-                // blocks_list() is a hash bucket shared by every page with the
-                // same page % FIBER_PAGE_HASH_SIZE. Only drop the blocks that
-                // live on this page: invalidating a heap page must not throw
-                // away unrelated code that happens to share its bucket.
-                page_t owner = i == 0 ? PAGE(block->addr) : PAGE(block->end_addr);
-                if (owner != page)
-                    continue;
-                fiber_block_disconnect(absestos, block);
-                block->is_jetsam = true;
-                list_add(&absestos->jetsam, &block->jetsam);
-                did_invalidate = true;
+            for (int i = 0; i <= 1; i++) {
+                struct list *blocks = &entry->blocks[i];
+                struct fiber_block *block, *tmp;
+                list_for_each_entry_safe(blocks, block, tmp, page[i]) {
+                    fiber_block_disconnect(absestos, block);
+                    block->is_jetsam = true;
+                    list_add(&absestos->jetsam, &block->jetsam);
+                    did_invalidate = true;
+                }
             }
         }
     }
@@ -493,18 +679,10 @@ void asbestos_invalidate_page(struct asbestos *asbestos, page_t page) {
     // [T-ish-mm-double-destroy-crash] See asbestos_invalidate_range —
     // a racing exit_group cleanup can reach this after asbestos was freed.
     if (asbestos == NULL) return;
-    // Fast path: skip lock if no blocks exist on this page.
-    // page_hash is only modified under asbestos->lock, and list_null is a
-    // single pointer read, so a racy false-negative just means we take
-    // the slow path unnecessarily (safe). A false-positive is impossible
-    // because blocks are always added before being linked into page_hash.
-    for (int i = 0; i <= 1; i++) {
-        struct list *blocks = blocks_list(asbestos, page, i);
-        if (!list_null(blocks))
-            goto slow_path;
-    }
-    return;
-slow_path:
+    if (!atomic_load_explicit(&asbestos->page_index_failed,
+                              memory_order_acquire) &&
+            fiber_page_lookup(asbestos, page) == NULL)
+        return;
     asbestos_invalidate_range(asbestos, page, page + 1);
 }
 void asbestos_invalidate_all(struct asbestos *asbestos) {
@@ -512,20 +690,7 @@ void asbestos_invalidate_all(struct asbestos *asbestos) {
     if (asbestos == NULL) return;
     lock(&asbestos->lock);
     bool did_invalidate = false;
-    struct fiber_block *block, *tmp;
-    for (size_t bucket = 0; bucket < FIBER_PAGE_HASH_SIZE; bucket++) {
-        for (int i = 0; i <= 1; i++) {
-            struct list *blocks = &asbestos->page_hash[bucket].blocks[i];
-            if (list_null(blocks))
-                continue;
-            list_for_each_entry_safe(blocks, block, tmp, page[i]) {
-                fiber_block_disconnect(asbestos, block);
-                block->is_jetsam = true;
-                list_add(&asbestos->jetsam, &block->jetsam);
-                did_invalidate = true;
-            }
-        }
-    }
+    fiber_invalidate_all_locked(asbestos, &did_invalidate);
     if (did_invalidate)
         atomic_store_explicit(&asbestos->invalidate_gen,
                               asbestos_next_invalidate_gen(), memory_order_release);
@@ -559,6 +724,20 @@ static void fiber_resize_hash(struct asbestos *asbestos, size_t new_size) {
 }
 
 static void fiber_insert(struct asbestos *asbestos, struct fiber_block *block) {
+    page_t first_page = PAGE(block->addr);
+    page_t last_page = PAGE(block->end_addr);
+    bool indexed = !atomic_load_explicit(&asbestos->page_index_failed,
+                                         memory_order_relaxed) &&
+        fiber_page_table_ensure(asbestos, first_page) &&
+        (last_page == first_page ||
+         fiber_page_table_ensure(asbestos, last_page));
+    if (!indexed) {
+        fiber_page_index_disable(asbestos);
+        fiber_page_table_remove_if_empty(asbestos, first_page);
+        if (last_page != first_page)
+            fiber_page_table_remove_if_empty(asbestos, last_page);
+    }
+
     asbestos->mem_used += block->used;
     asbestos->num_blocks++;
     // Keep the average hash chain length at or below 1.
@@ -566,9 +745,14 @@ static void fiber_insert(struct asbestos *asbestos, struct fiber_block *block) {
         fiber_resize_hash(asbestos, asbestos->hash_size * 2);
 
     list_init_add(&asbestos->hash[fiber_hash(block->addr, asbestos->hash_size)], &block->chain);
-    list_init_add(blocks_list(asbestos, PAGE(block->addr), 0), &block->page[0]);
-    if (PAGE(block->addr) != PAGE(block->end_addr))
-        list_init_add(blocks_list(asbestos, PAGE(block->end_addr), 1), &block->page[1]);
+    if (indexed) {
+        struct fiber_page_entry *first = fiber_page_lookup(asbestos, first_page);
+        list_init_add(&first->blocks[0], &block->page[0]);
+        if (last_page != first_page) {
+            struct fiber_page_entry *last = fiber_page_lookup(asbestos, last_page);
+            list_init_add(&last->blocks[1], &block->page[1]);
+        }
+    }
 }
 
 static struct fiber_block *fiber_lookup(struct asbestos *asbestos, addr_t addr) {
@@ -775,7 +959,13 @@ static void fiber_block_disconnect(struct asbestos *asbestos, struct fiber_block
     }
     list_remove(&block->chain);
     for (int i = 0; i <= 1; i++) {
-        list_remove_safe(&block->page[i]);
+        if (asbestos != NULL && !list_empty(&block->page[i])) {
+            page_t page = i == 0 ? PAGE(block->addr) : PAGE(block->end_addr);
+            list_remove(&block->page[i]);
+            fiber_page_table_remove_if_empty(asbestos, page);
+        } else {
+            list_remove_safe(&block->page[i]);
+        }
         list_remove_safe(&block->jumps_from_links[i]);
 
         struct fiber_block *prev_block, *tmp;

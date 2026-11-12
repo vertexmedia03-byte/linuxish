@@ -1,5 +1,6 @@
 #ifndef ASBESTOS_H
 #define ASBESTOS_H
+#include <stdatomic.h>
 #include "misc.h"
 #include "emu/mmu.h"
 #include "util/list.h"
@@ -7,7 +8,9 @@
 
 #define FIBER_INITIAL_HASH_SIZE (1 << 10)
 #define FIBER_CACHE_SIZE (1 << 12)  // 4096 entries
-#define FIBER_PAGE_HASH_SIZE (1 << 14)  // ~4-5 blocks per bucket on big programs; invalidation walks a bucket
+#define FIBER_PAGE_TABLE_INITIAL_SIZE (1 << 8)
+
+struct fiber_page_table;
 
 struct asbestos {
     // there is one asbestos per address space
@@ -22,10 +25,14 @@ struct asbestos {
     // period, if we had such a thing)
     struct list jetsam;
 
-    // A way to look up blocks in a page
-    struct {
-        struct list blocks[2];
-    } *page_hash;
+    // Exact guest-page index for block invalidation. Old table arrays remain
+    // alive until asbestos_free so lock-free presence checks cannot race a
+    // resize. If allocation fails, invalidation conservatively scans all blocks.
+    _Atomic(struct fiber_page_table *) page_table;
+    struct fiber_page_table *retired_page_tables;
+    size_t page_count;
+    size_t page_tombstones;
+    _Atomic bool page_index_failed;
 
     // Globally unique token changed on every block invalidation; invalidates
     // per-thread caches and prevents stale hits when a TLB is reused on exec.
@@ -70,7 +77,7 @@ struct fiber_block {
 
     // hashtable bucket links
     struct list chain;
-    // list of blocks in a page
+    // exact-page index links (start page, end page)
     struct list page[2];
     // links for jumps_from
     struct list jumps_from_links[2];
