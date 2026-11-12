@@ -68,10 +68,9 @@
 #ifdef DISABLE_BLOCK_CHAINING
     b \miss_label
 #else
-    ldur x12, [_tlb, #(TLB_invalidate_gen_ptr - TLB_entries)]
+    ldp x12, x11, [_tlb, #(TLB_invalidate_gen_ptr - TLB_entries)]
     ldr w12, [x12]
-    ldur w13, [_tlb, #(TLB_block_cache_gen - TLB_entries)]
-    cmp w13, w12
+    cmp w11, w12
     b.ne \miss_label
 
     add x11, _tlb, #((TLB_block_cache - TLB_entries) >> 12), lsl #12

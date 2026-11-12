@@ -2082,11 +2082,10 @@ static void store_ret_cache(struct em *e, int h, uint64_t ret, int base) {
 // fiber_ret's lookup keeps it); the three branches go to a miss.
 static void emit_block_cache_lookup(struct em *e, unsigned *miss1, unsigned *miss2, unsigned *miss3) {
     // stale cache? tlb->block_cache_gen != mmu->asbestos->invalidate_gen
-    int gen_ptr_off = TLB_invalidate_gen_ptr - TLB_entries;
-    int gen_off = TLB_block_cache_gen - TLB_entries;
-    put(e, 0xF8400000u | ((uint32_t) (gen_ptr_off & 0x1ff) << 12) | (2u << 5) | 12);  // ldur x12, [x2, #gen_ptr]
+    int gen_pair_off = TLB_invalidate_gen_ptr - TLB_entries;
+    put(e, 0xA9400000u | ((uint32_t) ((gen_pair_off / 8) & 0x7f) << 15) |
+          (11u << 10) | (2u << 5) | 12);                                        // ldp x12, x11, [x2, #generation fields]
     put(e, 0xB9400000u | (12u << 5) | 12);                                      // ldr w12, [x12]
-    put(e, 0xB8400000u | ((uint32_t) (gen_off & 0x1ff) << 12) | (2u << 5) | 11); // ldur w11, [x2, #block_cache_gen]
     put(e, 0x6B0C017Fu);                                                         // cmp w11, w12
     *miss1 = e->n; put(e, 0x54000001u);                                  // b.ne miss
     // x9 = block_cache[(ip ^ (ip >> 12)) & 4095]
@@ -2782,7 +2781,7 @@ void ish_aot_register(const struct aot_module *m) {
 
 // Bump whenever the code emitted for some guest instruction, stub or exit
 // changes: images made before would still pass every other check.
-#define JIT_CODE_VERSION 15
+#define JIT_CODE_VERSION 17
 
 // Everything the emitted code bakes in besides the gadgets it names: the
 // conventions, the struct layouts it loads from and the TLB / block cache
@@ -2803,6 +2802,7 @@ static uint32_t jit_abi(void) {
         sizeof(struct tlb_entry), offsetof(struct tlb_entry, page), offsetof(struct tlb_entry, page_if_writable),
         offsetof(struct tlb_entry, gen), offsetof(struct tlb_entry, data_minus_addr), TLB_BITS, PAGE_BITS,
         offsetof(struct tlb, entries), offsetof(struct tlb, mmu), offsetof(struct tlb, stale),
+        offsetof(struct tlb, invalidate_gen_ptr),
         offsetof(struct tlb, block_cache_gen),
         offsetof(struct tlb, block_cache), sizeof(((struct tlb *) 0)->block_cache),
         offsetof(struct mmu, changes), offsetof(struct mmu, asbestos), offsetof(struct asbestos, invalidate_gen),
