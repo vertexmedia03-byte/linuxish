@@ -11,9 +11,12 @@ _Static_assert(_Alignof(_Atomic unsigned) == _Alignof(unsigned),
 _Static_assert((offsetof(struct tlb, block_cache) -
         offsetof(struct tlb, entries)) % 4096 == 0,
         "ARM64 block-cache offset must be page aligned from TLB entries");
-_Static_assert((offsetof(struct tlb, block_cache_gen) -
-        offsetof(struct tlb, block_cache)) % 4096 == 0,
-        "ARM64 block-cache generation offset must be page aligned");
+_Static_assert(offsetof(struct tlb, invalidate_gen_ptr) < offsetof(struct tlb, entries) &&
+        offsetof(struct tlb, entries) - offsetof(struct tlb, invalidate_gen_ptr) <= 256,
+        "ARM64 JIT invalidation-generation pointer must fit an LDUR offset");
+_Static_assert(offsetof(struct tlb, block_cache_gen) < offsetof(struct tlb, entries) &&
+        offsetof(struct tlb, entries) - offsetof(struct tlb, block_cache_gen) <= 256,
+        "ARM64 JIT block-cache generation must fit an LDUR offset");
 #endif
 
 void cpu() {
@@ -154,5 +157,6 @@ void cpu() {
 #ifdef GUEST_ARM64
     OFFSET(TLB_ENTRY, tlb_entry, gen);
     OFFSET(MMU, mmu, changes);
+    OFFSET(TLB, tlb, invalidate_gen_ptr);
 #endif
 }

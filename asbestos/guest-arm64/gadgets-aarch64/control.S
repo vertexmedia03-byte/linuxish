@@ -68,15 +68,13 @@
 #ifdef DISABLE_BLOCK_CHAINING
     b \miss_label
 #else
-    add x11, _tlb, #((TLB_block_cache - TLB_entries) >> 12), lsl #12
-    add x12, x11, #((TLB_block_cache_gen - TLB_block_cache) >> 12), lsl #12
+    ldur x12, [_tlb, #(TLB_invalidate_gen_ptr - TLB_entries)]
     ldr w12, [x12]
-    ldr x13, [_tlb, #-TLB_entries]
-    ldr x13, [x13, #MMU_asbestos]
-    ldr w13, [x13, #ASBESTOS_invalidate_gen]
-    cmp w12, w13
+    ldur w13, [_tlb, #(TLB_block_cache_gen - TLB_entries)]
+    cmp w13, w12
     b.ne \miss_label
 
+    add x11, _tlb, #((TLB_block_cache - TLB_entries) >> 12), lsl #12
     eor x12, \target, \target, lsr #12
     and x12, x12, #0xfff
     ldr x11, [x11, x12, lsl #3]

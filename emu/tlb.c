@@ -1,5 +1,8 @@
 #include "emu/cpu.h"
 #include "emu/tlb.h"
+#ifdef GUEST_ARM64
+#include "asbestos/asbestos.h"
+#endif
 #ifdef ISH_PROFILE
 #include "asbestos/profile.h"
 #endif
@@ -19,6 +22,9 @@ void tlb_refresh(struct tlb *tlb, struct mmu *mmu) {
             free(tlb->frame);
             tlb->frame = NULL;
         }
+#ifdef GUEST_ARM64
+        tlb->invalidate_gen_ptr = &mmu->asbestos->invalidate_gen;
+#endif
     }
     tlb->mmu = mmu;
     tlb->dirty_page = TLB_PAGE_EMPTY;

@@ -39,12 +39,20 @@ struct tlb {
     // yes, this sucks
     addr_t segfault_addr;
 
+#ifdef GUEST_ARM64
+    // Kept adjacent to entries to shorten JIT block-cache generation checks.
+    _Atomic unsigned *invalidate_gen_ptr;
+    unsigned block_cache_gen;
+#endif
+
     struct tlb_entry entries[TLB_SIZE];
 
     // Persistent block cache across syscalls (avoids re-lookup after every interrupt)
     // Size defined by FIBER_CACHE_SIZE in asbestos.h
     struct fiber_block *block_cache[1 << 12];  // must match FIBER_CACHE_SIZE
+#ifndef GUEST_ARM64
     unsigned block_cache_gen; // tracks asbestos->invalidate_gen for invalidation
+#endif
 
     // Persistent fiber_frame (avoids malloc/free + ret_cache zeroing per syscall)
     struct fiber_frame *frame;
