@@ -384,9 +384,19 @@ static void fiber_block_free(struct asbestos *asbestos, struct fiber_block *bloc
 static void fiber_free_jetsam(struct asbestos *asbestos);
 static void fiber_resize_hash(struct asbestos *asbestos, size_t new_size);
 
+static _Atomic unsigned next_invalidate_gen = 1;
+
+static unsigned asbestos_next_invalidate_gen(void) {
+    unsigned gen = atomic_fetch_add_explicit(&next_invalidate_gen, 1, memory_order_relaxed);
+    if (gen == 0)
+        gen = atomic_fetch_add_explicit(&next_invalidate_gen, 1, memory_order_relaxed);
+    return gen;
+}
+
 struct asbestos *asbestos_new(struct mmu *mmu) {
     struct asbestos *asbestos = calloc(1, sizeof(struct asbestos));
     asbestos->mmu = mmu;
+    atomic_init(&asbestos->invalidate_gen, asbestos_next_invalidate_gen());
     fiber_resize_hash(asbestos, FIBER_INITIAL_HASH_SIZE);
     asbestos->page_hash = calloc(FIBER_PAGE_HASH_SIZE, sizeof(*asbestos->page_hash));
     list_init(&asbestos->jetsam);
@@ -474,7 +484,8 @@ void asbestos_invalidate_range(struct asbestos *absestos, page_t start, page_t e
         }
     }
     if (did_invalidate)
-        absestos->invalidate_gen++;
+        atomic_store_explicit(&absestos->invalidate_gen,
+                              asbestos_next_invalidate_gen(), memory_order_release);
     unlock(&absestos->lock);
 }
 
@@ -516,15 +527,18 @@ void asbestos_invalidate_all(struct asbestos *asbestos) {
         }
     }
     if (did_invalidate)
-        asbestos->invalidate_gen++;
+        atomic_store_explicit(&asbestos->invalidate_gen,
+                              asbestos_next_invalidate_gen(), memory_order_release);
     unlock(&asbestos->lock);
 }
 
-// hash_size is a power of two. ARM64 code addresses are 4-byte aligned, so
-// `addr % hash_size` left 3 of every 4 buckets empty; fold the address so the
-// low bucket bits come from bits 2+ (x86 keeps its byte-granular low bits).
+// hash_size is a power of two. Mix higher address bits into the word-aligned
+// address before multiplying so ARM64's two low alignment bits do not waste
+// buckets and separate high guest-code regions remain distinct.
 static inline size_t fiber_hash(addr_t addr, size_t size) {
-    return (size_t) (addr ^ (addr >> 2) ^ (addr >> 19)) & (size - 1);
+    uint64_t word_addr = ((uint64_t) addr >> 2) ^ ((uint64_t) addr >> 18);
+    uint64_t hash = word_addr * UINT64_C(11400714819323198485);
+    return (size_t) hash & (size - 1);
 }
 
 static void fiber_resize_hash(struct asbestos *asbestos, size_t new_size) {
@@ -547,8 +561,8 @@ static void fiber_resize_hash(struct asbestos *asbestos, size_t new_size) {
 static void fiber_insert(struct asbestos *asbestos, struct fiber_block *block) {
     asbestos->mem_used += block->used;
     asbestos->num_blocks++;
-    // target an average hash chain length of 1-2
-    if (asbestos->num_blocks >= asbestos->hash_size * 2)
+    // Keep the average hash chain length at or below 1.
+    if (asbestos->num_blocks >= asbestos->hash_size)
         fiber_resize_hash(asbestos, asbestos->hash_size * 2);
 
     list_init_add(&asbestos->hash[fiber_hash(block->addr, asbestos->hash_size)], &block->chain);
@@ -707,7 +721,8 @@ static void fiber_fix_fault_pc(struct asbestos *asbestos, struct fiber_frame *fr
 //   2. Compile.
 //   3. Verify (seqlock): if mmu->changes moved or P_CODE was cleared, a store
 //      may have landed mid-read — discard the block and retry.
-// Called under asbestos->lock (compile+insert are already serialized there).
+// This protects source bytes independently of asbestos->lock; insertion is
+// serialized separately after compilation.
 _Atomic uint64_t st_wx_marks = 0, st_wx_retries = 0, st_wx_giveups = 0;
 extern _Atomic uint64_t st_wx_clears;  // kernel/memory.c: stores that unprotected a code page
 void dump_wx_stats(void) {
@@ -812,11 +827,13 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
     read_wrlock(&asbestos->jetsam_lock);
 
     // Use persistent block cache and frame from TLB; invalidate when blocks are jetsam'd
-    bool caches_stale = (tlb->block_cache_gen != asbestos->invalidate_gen);
+    unsigned invalidate_gen =
+        atomic_load_explicit(&asbestos->invalidate_gen, memory_order_acquire);
+    bool caches_stale = (tlb->block_cache_gen != invalidate_gen);
     struct fiber_block **cache = tlb->block_cache;
     if (caches_stale) {
         memset(cache, 0, sizeof(tlb->block_cache));
-        tlb->block_cache_gen = asbestos->invalidate_gen;
+        tlb->block_cache_gen = invalidate_gen;
     }
 
     // Use persistent frame from TLB (avoids malloc/free + ret_cache zeroing)
@@ -851,9 +868,11 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
         // Check if blocks were invalidated since last check (e.g. CoW by another thread).
         // This must be inside the loop, not just at function entry, because invalidation
         // can happen while we're in the JIT cycle (between fiber_enter calls).
-        if (tlb->block_cache_gen != asbestos->invalidate_gen) {
+        unsigned invalidate_gen =
+            atomic_load_explicit(&asbestos->invalidate_gen, memory_order_acquire);
+        if (tlb->block_cache_gen != invalidate_gen) {
             memset(cache, 0, sizeof(tlb->block_cache));
-            tlb->block_cache_gen = asbestos->invalidate_gen;
+            tlb->block_cache_gen = invalidate_gen;
             memset(frame->ret_cache, 0, sizeof(frame->ret_cache));
         }
 
@@ -935,7 +954,8 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
             if (tlb->mem_changes != __atomic_load_n(&tlb->mmu->changes, __ATOMIC_ACQUIRE)) {
                 tlb_flush(tlb);
                 memset(cache, 0, sizeof(tlb->block_cache));
-                tlb->block_cache_gen = asbestos->invalidate_gen;
+                tlb->block_cache_gen =
+                    atomic_load_explicit(&asbestos->invalidate_gen, memory_order_acquire);
                 memset(frame->ret_cache, 0, sizeof(frame->ret_cache));
                 frame->last_block = NULL;
             }
@@ -998,12 +1018,58 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
                     atomic_fetch_add_explicit(&st_block_cache_miss, 1, memory_order_relaxed);
                 lock(&asbestos->lock);
                 block = fiber_lookup(asbestos, ip);
-                if (block == NULL) {
+                if (block != NULL)
+                    TRACE("%d %08x --- missed cache\n", current_pid(), ip);
 #ifdef GUEST_ARM64
-                    block = fiber_block_compile_protected(asbestos, ip, tlb);
+                unsigned compile_gen =
+                    atomic_load_explicit(&asbestos->invalidate_gen, memory_order_acquire);
+                unlock(&asbestos->lock);
+                while (block == NULL) {
+                    struct fiber_block *compiled =
+                        fiber_block_compile_protected(asbestos, ip, tlb);
+                    if (compiled == NULL) {
+                        lock(&asbestos->lock);
+                        block = fiber_lookup(asbestos, ip);
+                        unlock(&asbestos->lock);
+                        if (block != NULL)
+                            break;
+                        interrupt = INT_GPF;
+                        frame->cpu.segfault_addr = 0;
+                        frame->cpu.segfault_was_write = 0;
+                        break;
+                    }
+
+                    lock(&asbestos->lock);
+                    if (atomic_load_explicit(&asbestos->invalidate_gen,
+                                             memory_order_acquire) != compile_gen) {
+                        unlock(&asbestos->lock);
+                        fiber_block_free(NULL, compiled);
+                        lock(&asbestos->lock);
+                        block = fiber_lookup(asbestos, ip);
+                        compile_gen = atomic_load_explicit(&asbestos->invalidate_gen,
+                                                           memory_order_acquire);
+                        unlock(&asbestos->lock);
+                        continue;
+                    }
+
+                    block = fiber_lookup(asbestos, ip);
+                    if (block == NULL) {
+                        fiber_insert(asbestos, compiled);
+                        block = compiled;
+                        compiled = NULL;
+                        if (stage_trace_on())
+                            atomic_fetch_add_explicit(&st_block_compile, 1, memory_order_relaxed);
+                    }
+                    unlock(&asbestos->lock);
+                    if (compiled != NULL)
+                        fiber_block_free(NULL, compiled);
+                }
+                if (interrupt != INT_NONE)
+                    break;
+                cache[cache_index] = block;
 #else
+                if (block == NULL) {
                     block = fiber_block_compile(ip, tlb);
-#endif
                     if (block == NULL) {
                         unlock(&asbestos->lock);
                         interrupt = INT_GPF;
@@ -1014,11 +1080,10 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
                     fiber_insert(asbestos, block);
                     if (stage_trace_on())
                         atomic_fetch_add_explicit(&st_block_compile, 1, memory_order_relaxed);
-                } else {
-                    TRACE("%d %08x --- missed cache\n", current_pid(), ip);
                 }
                 cache[cache_index] = block;
                 unlock(&asbestos->lock);
+#endif
             }
         }
         // ISH_NO_CHAIN=1: never patch direct-jump chains between blocks, so
@@ -1172,7 +1237,8 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
             // Flush all caches to get fresh host pointers.
             tlb_flush(tlb);
             memset(cache, 0, sizeof(tlb->block_cache));
-            tlb->block_cache_gen = asbestos->invalidate_gen;
+            tlb->block_cache_gen =
+                atomic_load_explicit(&asbestos->invalidate_gen, memory_order_acquire);
             memset(frame->ret_cache, 0, sizeof(frame->ret_cache));
             frame->last_block = NULL;
 
@@ -1195,7 +1261,8 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
         if (tlb->mem_changes != __atomic_load_n(&tlb->mmu->changes, __ATOMIC_ACQUIRE)) {
             tlb_flush(tlb);
             memset(cache, 0, sizeof(tlb->block_cache));
-            tlb->block_cache_gen = asbestos->invalidate_gen;
+            tlb->block_cache_gen =
+                atomic_load_explicit(&asbestos->invalidate_gen, memory_order_acquire);
             memset(frame->ret_cache, 0, sizeof(frame->ret_cache));
             frame->last_block = NULL;
         }

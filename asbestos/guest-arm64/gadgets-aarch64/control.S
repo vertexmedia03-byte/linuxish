@@ -325,8 +325,7 @@ cbz_t_unchained:
  * Code stream: [gadget addr][rt | sf<<8 (64-bit)][fake_target (64-bit)][fake_fallthrough (64-bit)]
  */
 .gadget cbnz
-    ldr x8, [_pc]
-    add _pc, _pc, #8
+    ldr x8, [_pc], #8
     ldr x9, [_pc]           // target
     add _pc, _pc, #8
     ldr x10, [_pc]          // fallthrough
@@ -396,10 +395,8 @@ cbz_64_t_unchained:
 
 // CBZ Wt, target (32-bit, rt!=31)
 .gadget cbz_32
-    ldr x8, [_pc]
-    add _pc, _pc, #8
-    ldr x9, [_pc]
-    add _pc, _pc, #8
+    ldr x8, [_pc], #8
+    ldr x9, [_pc], #8
     ldr x10, [_pc]
     add x13, _cpu, #CPU_x0
     ldr x14, [x13, x8, lsl #3] // load 64-bit, check only low 32
@@ -420,10 +417,8 @@ cbz_32_t_unchained:
 
 // CBNZ Xt, target (64-bit, rt!=31)
 .gadget cbnz_64
-    ldr x8, [_pc]
-    add _pc, _pc, #8
-    ldr x9, [_pc]
-    add _pc, _pc, #8
+    ldr x8, [_pc], #8
+    ldr x9, [_pc], #8
     ldr x10, [_pc]
     add x13, _cpu, #CPU_x0
     ldr x14, [x13, x8, lsl #3]
@@ -444,10 +439,8 @@ cbnz_64_t_unchained:
 
 // CBNZ Wt, target (32-bit, rt!=31)
 .gadget cbnz_32
-    ldr x8, [_pc]
-    add _pc, _pc, #8
-    ldr x9, [_pc]
-    add _pc, _pc, #8
+    ldr x8, [_pc], #8
+    ldr x9, [_pc], #8
     ldr x10, [_pc]
     add x13, _cpu, #CPU_x0
     ldr x14, [x13, x8, lsl #3]
@@ -609,8 +602,7 @@ bcond_not_taken_unchained:
  * If condition is false: Xd = Xm
  */
 .gadget csel
-    ldr x8, [_pc]
-    add _pc, _pc, #8
+    ldr x8, [_pc], #8
 
     and x9, x8, #0x1f       // rd
     ubfx x10, x8, #8, #5    // rn
@@ -831,8 +823,7 @@ tbnz_nt_unchained:
  *   CSET Xd, cond      -> CSINC Xd, XZR, XZR, invert(cond)
  */
 .gadget csinc
-    ldr x8, [_pc]
-    add _pc, _pc, #8
+    ldr x8, [_pc], #8
 
     and x9, x8, #0x1f       // rd
     ubfx x10, x8, #8, #5    // rn
@@ -948,8 +939,7 @@ csinc_store:
  * If condition is false: Xd = NOT(Xm)
  */
 .gadget csinv
-    ldr x8, [_pc]
-    add _pc, _pc, #8
+    ldr x8, [_pc], #8
 
     and x9, x8, #0x1f
     ubfx x10, x8, #8, #5
@@ -1063,8 +1053,7 @@ csinv_store:
  * If condition is false: Xd = -Xm
  */
 .gadget csneg
-    ldr x8, [_pc]
-    add _pc, _pc, #8
+    ldr x8, [_pc], #8
 
     and x9, x8, #0x1f
     ubfx x10, x8, #8, #5
@@ -1533,10 +1522,8 @@ make_fused_subs_reg_bcond le, le
  */
 .macro make_fused_cmp32_reg_bcond name, cond
 .gadget fused_cmp32_reg_bcond_\name
-    ldr x8, [_pc]
-    add _pc, _pc, #8
-    ldr x9, [_pc]
-    add _pc, _pc, #8
+    ldr x8, [_pc], #8
+    ldr x9, [_pc], #8
     ldr x10, [_pc]
     and x11, x8, #0x1f
     ubfx x12, x8, #8, #5
@@ -1552,10 +1539,8 @@ make_fused_subs_reg_bcond le, le
 
 .macro make_fused_subs32_reg_bcond name, cond
 .gadget fused_subs32_reg_bcond_\name
-    ldr x8, [_pc]
-    add _pc, _pc, #8
-    ldr x9, [_pc]
-    add _pc, _pc, #8
+    ldr x8, [_pc], #8
+    ldr x9, [_pc], #8
     ldr x10, [_pc]
     and x11, x8, #0x1f
     ubfx x12, x8, #8, #5

@@ -27,9 +27,9 @@ struct asbestos {
         struct list blocks[2];
     } *page_hash;
 
-    // Incremented on every block invalidation; used to invalidate persistent
-    // per-thread block caches (which may hold pointers to jetsam'd blocks)
-    unsigned invalidate_gen;
+    // Globally unique token changed on every block invalidation; invalidates
+    // per-thread caches and prevents stale hits when a TLB is reused on exec.
+    _Atomic unsigned invalidate_gen;
 
     // Number of threads currently inside cpu_run_to_interrupt.
     // When 1, we can skip jetsam_lock (no other thread to synchronize with).

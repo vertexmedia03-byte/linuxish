@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <pthread.h>
 #include "asbestos/gen.h"
 #ifdef ISH_JIT
 #include "asbestos/guest-arm64/jit.h"
@@ -54,6 +55,7 @@ extern void gadget_store_addr_to_reg(void);  // Store _addr to guest register
 extern void gadget_movz(void);
 extern void gadget_movk(void);
 extern void gadget_movn(void);
+extern void gadget_mov_const(void);
 extern void gadget_add_imm(void);
 extern void gadget_sub_imm(void);
 extern void gadget_add_reg(void);
@@ -68,6 +70,7 @@ extern void gadget_eor_reg_shifted(void);
 extern void gadget_eor_reg(void);
 extern void gadget_mov_reg(void);
 extern void gadget_mov_reg32(void);
+extern void gadget_mov_reg_pair(void);
 extern void gadget_and_imm(void);
 extern void gadget_orr_imm(void);
 extern void gadget_eor_imm(void);
@@ -690,6 +693,18 @@ static uint64_t arm64_fpimm_to_bits(bool is_double, uint8_t imm8) {
     }
 }
 
+static bool decode_mov_wide(uint32_t insn, uint32_t *sf, uint32_t *opc,
+                            uint32_t *hw, uint32_t *imm16, uint32_t *rd) {
+    if ((insn & 0x1f800000u) != 0x12800000u)
+        return false;
+    *sf = (insn >> 31) & 1;
+    *opc = (insn >> 29) & 3;
+    *hw = (insn >> 21) & 3;
+    *imm16 = (insn >> 5) & 0xffff;
+    *rd = insn & 0x1f;
+    return *opc == 0 || *opc == 2 || *opc == 3;
+}
+
 // Interleaved SIMD load/store gadgets (LD2/LD3/LD4, ST2/ST3/ST4)
 extern void gadget_simd_load_interleaved(void);
 extern void gadget_simd_store_interleaved(void);
@@ -792,6 +807,7 @@ extern void gadget_load16_imm(void);
 extern void gadget_load8_imm(void);
 extern void gadget_load32_sx_imm(void);
 extern void gadget_load64_imm_fast(void);
+extern void gadget_load64_add_imm(void);
 extern void gadget_load32_imm_fast(void);
 extern void gadget_load16_imm_fast(void);
 extern void gadget_load8_imm_fast(void);
@@ -1016,6 +1032,10 @@ static int gen_branch(struct gen_state *state, uint32_t insn);
 static int gen_ldst(struct gen_state *state, uint32_t insn);
 static int gen_dp_reg(struct gen_state *state, uint32_t insn);
 static int gen_simd_fp(struct gen_state *state, uint32_t insn);
+static bool gen_peek_next_insn(struct gen_state *state, uint32_t *next_insn);
+static bool decode_mov_reg64(uint32_t insn, uint32_t *rd, uint32_t *rm);
+static bool decode_mov_wide(uint32_t insn, uint32_t *sf, uint32_t *opc,
+                            uint32_t *hw, uint32_t *imm16, uint32_t *rd);
 
 extern volatile bool g_trace_highbits;
 
@@ -1035,6 +1055,86 @@ int gen_step(struct gen_state *state, struct tlb *tlb) {
         return 0;
     }
     state->last_insn = insn;
+
+    // Fuse adjacent 64-bit MOV register aliases into one gadget dispatch.
+    if (!state->units && !g_trace_highbits) {
+        uint32_t rd1, rm1, rd2, rm2, next;
+        if (decode_mov_reg64(insn, &rd1, &rm1) &&
+                gen_peek_next_insn(state, &next) &&
+                decode_mov_reg64(next, &rd2, &rm2)) {
+            gen(state, (unsigned long) gadget_mov_reg_pair);
+            gen(state, rd1 | (rm1 << 5) | (rd2 << 10) | (rm2 << 15));
+            state->ip += sizeof(uint32_t);
+            return 1;
+        }
+    }
+
+    // Fold MOVZ/MOVN followed by one or more MOVKs into a single constant
+    // write. MOVK is consumed only when it targets the same width/register.
+    if (!state->units && !g_trace_highbits) {
+        uint32_t sf, opc, hw, imm16, rd;
+        if (decode_mov_wide(insn, &sf, &opc, &hw, &imm16, &rd) &&
+                (opc == 0 || opc == 2) && rd != 31 && (sf || hw < 2)) {
+            uint64_t mask = sf ? UINT64_MAX : UINT32_MAX;
+            uint64_t value = (uint64_t) imm16 << (hw * 16);
+            if (opc == 0)
+                value = ~value;
+            value &= mask;
+
+            addr_t cursor = state->ip;
+            unsigned folded = 0;
+            while (folded < 3) {
+                uint32_t next, next_sf, next_opc, next_hw, next_imm16, next_rd;
+                addr_t next_cursor = cursor;
+                if (!arm64_read_insn(&next_cursor, tlb, &next) ||
+                        !decode_mov_wide(next, &next_sf, &next_opc,
+                                         &next_hw, &next_imm16, &next_rd) ||
+                        next_opc != 3 || next_sf != sf || next_rd != rd ||
+                        (!sf && next_hw >= 2))
+                    break;
+                uint64_t shift = next_hw * 16;
+                uint64_t field = UINT64_C(0xffff) << shift;
+                value = (value & ~field) | ((uint64_t) next_imm16 << shift);
+                cursor = next_cursor;
+                folded++;
+            }
+            if (folded != 0) {
+                gen(state, (unsigned long) gadget_mov_const);
+                gen(state, rd | ((uint64_t) sf << 8));
+                gen(state, value & mask);
+                state->ip = cursor;
+                return 1;
+            }
+        }
+    }
+
+    // Fuse LDR Xd,[Xn,#imm] followed by ADD Xd,Xd,#imm into one gadget.
+    // Both operations are non-faulting after the load, so the load remains
+    // the precise faulting instruction while the result matches the pair.
+    if (!state->units && !g_trace_highbits &&
+            (insn & 0xffc00000u) == 0xf9400000u) {
+        uint32_t load_rd = insn & 0x1f;
+        uint32_t load_rn = (insn >> 5) & 0x1f;
+        uint32_t load_imm12 = (insn >> 10) & 0xfff;
+        uint32_t next;
+        if (load_rd != 31 && gen_peek_next_insn(state, &next) &&
+                (next & 0xff800000u) == 0x91000000u) {
+            uint32_t add_rd = next & 0x1f;
+            uint32_t add_rn = (next >> 5) & 0x1f;
+            uint32_t add_imm12 = (next >> 10) & 0xfff;
+            uint32_t add_shift = (next >> 22) & 1;
+            if (add_rd == load_rd && add_rn == load_rd) {
+                uint64_t param = load_rd | ((uint64_t)load_rn << 5) |
+                    ((uint64_t)load_imm12 << 10) |
+                    ((uint64_t)add_imm12 << 22) |
+                    ((uint64_t)add_shift << 34);
+                gen(state, (unsigned long)gadget_load64_add_imm);
+                gen(state, param);
+                state->ip += sizeof(uint32_t);
+                return 1;
+            }
+        }
+    }
 
 #ifndef DISABLE_DECREF_FUSION
     // Peephole: fuse CPython's inlined Py_DECREF fast path into one gadget.
@@ -1258,6 +1358,14 @@ static bool gen_peek_next_insn(struct gen_state *state, uint32_t *next_insn) {
     return tlb_read(state->tlb, state->ip, next_insn, sizeof(*next_insn));
 }
 
+static bool decode_mov_reg64(uint32_t insn, uint32_t *rd, uint32_t *rm) {
+    if ((insn & 0xffe0ffe0u) != 0xaa0003e0u)
+        return false;
+    *rd = insn & 0x1f;
+    *rm = (insn >> 16) & 0x1f;
+    return *rd != 31 && *rm != 31;
+}
+
 /*
  * Fused CMP/SUBS + B.cond gadget tables (initialized lazily)
  */
@@ -1274,10 +1382,9 @@ static void *fused_subs32_reg_bcond_gadgets[14];
 // changes meaning when the AND result drives N/V (signed comparison) —
 // keep those as the unfused 2-gadget path.
 static void *fused_and_cmp32_bcond_gadgets[14];
-static bool fused_bcond_tables_init = false;
+static pthread_once_t fused_bcond_tables_once = PTHREAD_ONCE_INIT;
 
 static void init_fused_bcond_tables(void) {
-    if (fused_bcond_tables_init) return;
     fused_cmp_bcond_gadgets[0]  = gadget_fused_cmp_bcond_eq;
     fused_cmp_bcond_gadgets[1]  = gadget_fused_cmp_bcond_ne;
     fused_cmp_bcond_gadgets[2]  = gadget_fused_cmp_bcond_cs;
@@ -1413,7 +1520,11 @@ static void init_fused_bcond_tables(void) {
     fused_and_cmp32_bcond_gadgets[11] = gadget_fused_and_cmp32_bcond_lt;
     fused_and_cmp32_bcond_gadgets[12] = gadget_fused_and_cmp32_bcond_gt;
     fused_and_cmp32_bcond_gadgets[13] = gadget_fused_and_cmp32_bcond_le;
-    fused_bcond_tables_init = true;
+}
+
+static void ensure_fused_bcond_tables(void) {
+    if (pthread_once(&fused_bcond_tables_once, init_fused_bcond_tables) != 0)
+        abort();
 }
 
 /*
@@ -1432,7 +1543,7 @@ static int try_fuse_subs_bcond(struct gen_state *state, uint32_t sf, uint32_t rd
     if (cond >= 14)  // AL/NV — not worth fusing
         return -1;
 
-    init_fused_bcond_tables();
+    ensure_fused_bcond_tables();
 
     // Consume the B.cond instruction
     state->ip += 4;
@@ -1473,7 +1584,7 @@ static int try_fuse_subs_reg_bcond(struct gen_state *state, uint32_t sf, uint32_
     if (cond >= 14)
         return -1;
 
-    init_fused_bcond_tables();
+    ensure_fused_bcond_tables();
 
     state->ip += 4;
 
@@ -1698,7 +1809,7 @@ static int gen_dp_imm(struct gen_state *state, uint32_t insn) {
                         if (tlb_read(state->tlb, br_ip, &br_insn, sizeof(br_insn)) &&
                             (br_insn & 0xff000010) == 0x54000000) {
                             uint32_t cond = br_insn & 0xf;
-                            init_fused_bcond_tables();
+                            ensure_fused_bcond_tables();
                             void *g = (cond < 14) ? fused_and_cmp32_bcond_gadgets[cond] : NULL;
                             if (g != NULL) {
                                 int64_t br_off = arm64_branch_imm19(br_insn);
