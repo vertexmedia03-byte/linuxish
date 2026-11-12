@@ -8,10 +8,10 @@ on:
   workflow_dispatch:
     inputs:
       diagnostic_profile:
-        description: Build an IPA with on-device profiling enabled
+        description: Build an IPA with on-device profiling enabled (enabled by default)
         type: boolean
         required: true
-        default: false
+        default: true
 
 jobs:
   build:
@@ -100,9 +100,32 @@ jobs:
 
           ditto -c -k --sequesterRsrc --keepParent "$IPA_ROOT/Payload" "$RUNNER_TEMP/iSH-ARM64.ipa"
 
+      - name: Package diagnostic symbols
+        if: env.PROFILE_BUILD == 'true'
+        run: |
+          PRODUCTS="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos"
+          SYMBOLS="$RUNNER_TEMP/iSH-ARM64-profile-symbols"
+          mkdir -p "$SYMBOLS"
+          found=false
+          while IFS= read -r -d '' dsym; do
+            found=true
+            ditto "$dsym" "$SYMBOLS/$(basename "$dsym")"
+          done < <(find "$PRODUCTS" -type d -name '*.dSYM' -print0)
+          test "$found" = true
+          ditto -c -k --sequesterRsrc --keepParent "$SYMBOLS" \
+            "$RUNNER_TEMP/iSH-ARM64-profile-symbols.zip"
+
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: iSH-ARM64-${{ ((github.event_name == 'workflow_dispatch' && inputs.diagnostic_profile) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[diagnostic-profile]'))) && 'profile' || 'trollstore' }}-ipa
           path: ${{ runner.temp }}/iSH-ARM64.ipa
+          if-no-files-found: error
+
+      - name: Upload diagnostic symbols
+        if: env.PROFILE_BUILD == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: iSH-ARM64-profile-symbols
+          path: ${{ runner.temp }}/iSH-ARM64-profile-symbols.zip
           if-no-files-found: error
