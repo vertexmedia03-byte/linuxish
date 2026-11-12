@@ -2460,6 +2460,78 @@ atomic_cas_segfault:
     gret
     read_bullshit 64, fused_adrp_ldr64_1
 
+.gadget fused_adrp_ldr32
+    ldr x22, [_pc]
+    ldr x23, [_pc, #8]
+    add _pc, _pc, #16
+
+    ubfx x9, x22, #5, #5
+    add x11, _cpu, #CPU_x0
+    str x23, [x11, x9, lsl #3]
+
+    ubfx x10, x22, #16, #16
+    add _addr, x23, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    read_prep 32, fused_adrp_ldr32_1
+    ldr w0, [_addr]
+
+    and x8, x22, #0x1f
+    add x11, _cpu, #CPU_x0
+    str x0, [x11, x8, lsl #3]
+    mov _addr, x24
+    gret
+    read_bullshit 32, fused_adrp_ldr32_1
+
+.gadget fused_adrp_ldr16
+    ldr x22, [_pc]
+    ldr x23, [_pc, #8]
+    add _pc, _pc, #16
+
+    ubfx x9, x22, #5, #5
+    add x11, _cpu, #CPU_x0
+    str x23, [x11, x9, lsl #3]
+
+    ubfx x10, x22, #16, #16
+    add _addr, x23, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    read_prep 16, fused_adrp_ldr16_1
+    ldrh w0, [_addr]
+
+    and x8, x22, #0x1f
+    add x11, _cpu, #CPU_x0
+    str x0, [x11, x8, lsl #3]
+    mov _addr, x24
+    gret
+    read_bullshit 16, fused_adrp_ldr16_1
+
+.gadget fused_adrp_ldr8
+    ldr x22, [_pc]
+    ldr x23, [_pc, #8]
+    add _pc, _pc, #16
+
+    ubfx x9, x22, #5, #5
+    add x11, _cpu, #CPU_x0
+    str x23, [x11, x9, lsl #3]
+
+    ubfx x10, x22, #16, #16
+    add _addr, x23, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    read_prep 8, fused_adrp_ldr8_1
+    ldrb w0, [_addr]
+
+    and x8, x22, #0x1f
+    add x11, _cpu, #CPU_x0
+    str x0, [x11, x8, lsl #3]
+    mov _addr, x24
+    gret
+    read_bullshit 8, fused_adrp_ldr8_1
+
 /*
  * Fused ADRP+ADD gadget
  * When ADRP Xd, #page is immediately followed by ADD Xd, Xd, #imm12,

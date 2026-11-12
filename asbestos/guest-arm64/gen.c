@@ -77,6 +77,9 @@ extern void gadget_eor_imm(void);
 extern void gadget_adr(void);
 extern void gadget_adrp(void);
 extern void gadget_fused_adrp_ldr64(void);
+extern void gadget_fused_adrp_ldr32(void);
+extern void gadget_fused_adrp_ldr16(void);
+extern void gadget_fused_adrp_ldr8(void);
 extern void gadget_sxtw(void);
 extern void gadget_sxth(void);
 extern void gadget_sxtb(void);
@@ -1647,22 +1650,30 @@ static int gen_dp_imm(struct gen_state *state, uint32_t insn) {
             target = state->orig_ip + imm;
         }
 
-        // Try fused ADRP+LDR64: ADRP Xd, #page; LDR Xt, [Xd, #imm]
+        // Try fused ADRP+unsigned LDR: ADRP Xd, #page; LDR Xt, [Xd, #imm]
         if (is_adrp && rd != 31) {
             uint32_t next;
             if (gen_peek_next_insn(state, &next)) {
-                // LDR Xt (64-bit, unsigned offset): 1111 1001 01 imm12 Rn Rt
-                if ((next & 0xffc00000) == 0xf9400000) {
+                // Unsigned-immediate LDRB/H/W/X, with the size in bits 31:30.
+                if ((next & 0x3fc00000) == 0x39400000) {
                     uint32_t ldr_rt = next & 0x1f;
                     uint32_t ldr_rn = (next >> 5) & 0x1f;
                     uint32_t ldr_imm12 = (next >> 10) & 0xfff;
-                    uint32_t ldr_offset = ldr_imm12 << 3; // scale by 8 for 64-bit
+                    uint32_t ldr_size = (next >> 30) & 0x3;
+                    uint32_t ldr_offset = ldr_imm12 << ldr_size;
                     if (ldr_rn == rd && ldr_rt != 31) {
+                        void *gadget;
+                        switch (ldr_size) {
+                            case 0: gadget = gadget_fused_adrp_ldr8; break;
+                            case 1: gadget = gadget_fused_adrp_ldr16; break;
+                            case 2: gadget = gadget_fused_adrp_ldr32; break;
+                            default: gadget = gadget_fused_adrp_ldr64; break;
+                        }
                         // Fuse: emit single gadget, consume the LDR
                         // Param 1: ldr_rt[0:4] | rd[5:9] | ldr_offset[16:31]
-                        // Param 2: adrp_target (32-bit, zero-extended)
+                        // Param 2: adrp_target (48-bit, zero-extended)
                         state->ip += 4;
-                        gen(state, (unsigned long) gadget_fused_adrp_ldr64);
+                        gen(state, (unsigned long) gadget);
                         gen(state, ldr_rt | ((uint64_t)rd << 5) | ((uint64_t)ldr_offset << 16));
                         gen(state, target & 0xffffffffffffULL);
                         return 1;

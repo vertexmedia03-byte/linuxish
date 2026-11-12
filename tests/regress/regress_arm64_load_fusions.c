@@ -5,6 +5,10 @@ uint64_t ldr64_add_imm(const void *p);
 uint64_t ldr32_add_imm(const void *p);
 uint64_t ldrb_add_imm(const void *p);
 uint64_t ldrh_add_imm(const void *p);
+uint64_t adrp_ldrb(void);
+uint64_t adrp_ldrh(void);
+uint64_t adrp_ldrw(void);
+uint64_t adrp_ldrx(void);
 uint32_t ldrb_reg(const void *p, uint64_t index);
 uint32_t ldrh_reg(const void *p, uint64_t index);
 
@@ -34,6 +38,10 @@ int main(void) {
     check("LDRH + ADD", ldrh_add_imm(values), UINT64_C(0x89ab) + 0x21);
     check("LDRB register", ldrb_reg(values, 0), 0xef);
     check("LDRH register", ldrh_reg(values, 1), 0x89ab);
+    check("ADRP + LDRB", adrp_ldrb(), UINT64_C(0x21));
+    check("ADRP + LDRH", adrp_ldrh(), UINT64_C(0x4332));
+    check("ADRP + LDR W", adrp_ldrw(), UINT64_C(0x87766554));
+    check("ADRP + LDR X", adrp_ldrx(), UINT64_C(0x0ffeeddccbbaa998));
     printf("\n  FAIL=%d\n", failures);
     return failures != 0;
 }
