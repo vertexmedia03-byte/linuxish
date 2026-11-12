@@ -480,10 +480,28 @@ static void profile_host_pc_label(char *buf, size_t size, uintptr_t pc) {
     translated = jit_host_pc_is_translated(pc);
     uint64_t jit_offset;
     if (translated && jit_host_pc_offset(pc, &jit_offset)) {
-        snprintf(buf, size, "translated+0x%llx (host PC 0x%llx)",
-                 (unsigned long long) (jit_offset &
-                     ~((UINT64_C(1) << ISH_PROFILE_HOST_PC_SHIFT) - 1)),
-                 (unsigned long long) pc);
+        int module;
+        uint64_t guest_off, guest_pc;
+        unsigned units;
+        bool in_tlb;
+        uint64_t host_bucket = jit_offset &
+            ~((UINT64_C(1) << ISH_PROFILE_HOST_PC_SHIFT) - 1);
+        if (jit_host_pc_guest(pc, &module, &guest_off, &guest_pc, &units, &in_tlb)) {
+            char path[256];
+            if (module >= 0)
+                jit_module_path(module, path, sizeof(path));
+            else
+                snprintf(path, sizeof(path), "[unmapped]");
+            const char *name = strrchr(path, '/');
+            name = name ? name + 1 : path;
+            snprintf(buf, size, "translated+0x%llx -> %s+0x%llx (segment PC 0x%llx, %u units%s)",
+                     (unsigned long long) host_bucket, name,
+                     (unsigned long long) guest_off, (unsigned long long) guest_pc, units,
+                     in_tlb ? ", inline TLB" : "");
+        } else {
+            snprintf(buf, size, "translated+0x%llx (host PC 0x%llx)",
+                     (unsigned long long) host_bucket, (unsigned long long) pc);
+        }
         return;
     }
 #endif

@@ -57,7 +57,7 @@ static bool dirty_on;     // ISH_JIT_DIRTY=0: write lazy guest registers through
 static bool pic_on;       // ISH_JIT_PIC=1: position-independent code (see "PIC" below)
 static bool aot_only;     // ISH_JIT_AOT_ONLY=1: install AOT translations, translate nothing
                           // (what a build without the JIT would run)
-static bool cm_on;        // ISH_JIT_MAP: retain host code ranges for profiling
+static bool cm_on;        // retain host code ranges for map output and profile attribution
 
 #ifdef ISH_JIT_STRICT
 static void jit_write_guest_failure(const char *reason, uint64_t pc, uint32_t insn) {
@@ -3599,6 +3599,7 @@ static struct cm_segment *cm_segs;
 static size_t cm_nsegs, cm_capsegs;
 static struct cm_tlb_range *cm_tlb_ranges;
 static size_t cm_ntlb_ranges, cm_captlb_ranges;
+static bool cm_count_blocks;
 
 // NT_GNU_BUILD_ID of the ELF file behind fd (at most 20 bytes); 0 if none.
 static unsigned elf_build_id(struct fd *fd, uint8_t id[20]) {
@@ -3729,6 +3730,36 @@ void jit_module_path(int mod, char *buf, size_t size) {
     pthread_mutex_lock(&cm_lock);
     snprintf(buf, size, "%s", (unsigned) mod < cm_nmods ? cm_mods[mod].path : "?");
     pthread_mutex_unlock(&cm_lock);
+}
+
+bool jit_host_pc_guest(uintptr_t pc, int *module, uint64_t *off, uint64_t *guest_pc,
+                       unsigned *units, bool *in_tlb) {
+    bool found = false;
+    pthread_mutex_lock(&cm_lock);
+    for (size_t i = cm_nsegs; i > 0; i--) {
+        const struct cm_segment *seg = &cm_segs[i - 1];
+        uint64_t start = seg->code;
+        if (pc < start || pc - start >= 4 * (uint64_t) seg->words)
+            continue;
+        if (module) *module = seg->mod;
+        if (off) *off = seg->off;
+        if (guest_pc) *guest_pc = seg->pc;
+        if (units) *units = seg->units;
+        if (in_tlb) {
+            *in_tlb = false;
+            for (size_t j = 0; j < cm_ntlb_ranges; j++) {
+                const struct cm_tlb_range *range = &cm_tlb_ranges[j];
+                if (pc >= range->code && pc - range->code < 4 * (uint64_t) range->words) {
+                    *in_tlb = true;
+                    break;
+                }
+            }
+        }
+        found = true;
+        break;
+    }
+    pthread_mutex_unlock(&cm_lock);
+    return found;
 }
 
 // Was image m recorded from this module (IMG_SAME: by build-id when both have
@@ -4141,6 +4172,10 @@ static void jit_init(void) {
         pic_on = true;
     pin_init(pin_on);
     cm_on = getenv("ISH_JIT_MAP") != NULL;
+    cm_count_blocks = cm_on;
+#ifdef ISH_PROFILE
+    cm_on = true;
+#endif
     rec_file = pic_on && have_region ? getenv("ISH_JIT_RECORD") : NULL;
     rec_mod = getenv("ISH_JIT_RECORD_MOD") ? getenv("ISH_JIT_RECORD_MOD") : "ld-musl";
     if (have_region) {
@@ -4299,7 +4334,7 @@ void jit_block(struct fiber_block *b, struct jit_units *U) {
         ish_write_jit_trace("Guest block translation started", b->addr, U->n, false);
 #endif
     uint64_t t0 = jit_ticks();
-    if (cm_on)
+    if (cm_count_blocks)
         cm_block(b);
     jit_translate(b, U, &scratch->em, scratch->key);
     uint64_t ticks = jit_ticks() - t0;
