@@ -34,9 +34,11 @@ static __thread volatile sig_atomic_t prof_host_sampling_suppressed;
 #define ISH_PROFILE_GUEST_PC_BUCKETS 4096
 #define ISH_PROFILE_GUEST_PC_PROBES 16
 #define ISH_PROFILE_GUEST_PC_SHIFT 8
-#define ISH_PROFILE_HOST_PC_BUCKETS 4096
+#define ISH_PROFILE_HOST_PC_BUCKET_BITS 14
+#define ISH_PROFILE_HOST_PC_BUCKETS (1u << ISH_PROFILE_HOST_PC_BUCKET_BITS)
 #define ISH_PROFILE_HOST_PC_PROBES 16
-#define ISH_PROFILE_HOST_PC_SHIFT 8
+#define ISH_PROFILE_HOST_PC_SHIFT 2
+#define ISH_PROFILE_HOST_PAIR_SHIFT 8
 #define ISH_PROFILE_HOST_PC_TRANSLATED 0
 #define ISH_PROFILE_HOST_PC_GUEST_NATIVE 1
 #define ISH_PROFILE_HOST_PC_HOST_RUNTIME 2
@@ -315,7 +317,7 @@ void ish_profile_record_host_pc(uintptr_t pc, uintptr_t lr, bool translated,
         return;
     }
     unsigned slot = (unsigned) ((bucket * UINT64_C(11400714819323198485)) >>
-                                (64 - 12));
+                                (64 - ISH_PROFILE_HOST_PC_BUCKET_BITS));
     bool pc_recorded = false;
     for (unsigned probe = 0; probe < ISH_PROFILE_HOST_PC_PROBES; probe++) {
         unsigned i = (slot + probe) & (ISH_PROFILE_HOST_PC_BUCKETS - 1);
@@ -341,10 +343,12 @@ void ish_profile_record_host_pc(uintptr_t pc, uintptr_t lr, bool translated,
     if (translated)
         return;
 
+    uint64_t pair_pc_bucket = (uint64_t) pc &
+        ~((UINT64_C(1) << ISH_PROFILE_HOST_PAIR_SHIFT) - 1);
     uint64_t lr_bucket = (uint64_t) lr &
-                         ~((UINT64_C(1) << ISH_PROFILE_HOST_PC_SHIFT) - 1);
-    uint64_t pair_hash = bucket ^ (lr_bucket + UINT64_C(0x9e3779b97f4a7c15) +
-                                   (bucket << 6) + (bucket >> 2));
+        ~((UINT64_C(1) << ISH_PROFILE_HOST_PAIR_SHIFT) - 1);
+    uint64_t pair_hash = pair_pc_bucket ^ (lr_bucket + UINT64_C(0x9e3779b97f4a7c15) +
+                                           (pair_pc_bucket << 6) + (pair_pc_bucket >> 2));
     unsigned pair_slot = (unsigned) ((pair_hash * UINT64_C(11400714819323198485)) >>
                                      (64 - 12));
     for (unsigned probe = 0; probe < ISH_PROFILE_HOST_PAIR_PROBES; probe++) {
@@ -353,7 +357,7 @@ void ish_profile_record_host_pc(uintptr_t pc, uintptr_t lr, bool translated,
                                               memory_order_acquire);
         if (state == 2 &&
             atomic_load_explicit(&prof_host_pairs[i].pc_bucket, memory_order_relaxed) ==
-                bucket &&
+                pair_pc_bucket &&
             atomic_load_explicit(&prof_host_pairs[i].lr_bucket, memory_order_relaxed) ==
                 lr_bucket) {
             atomic_fetch_add_explicit(&prof_host_pairs[i].samples, 1,
@@ -372,7 +376,7 @@ void ish_profile_record_host_pc(uintptr_t pc, uintptr_t lr, bool translated,
         if (atomic_compare_exchange_strong_explicit(
                 &prof_host_pairs[i].state, &empty, 1,
                 memory_order_relaxed, memory_order_relaxed)) {
-            atomic_store_explicit(&prof_host_pairs[i].pc_bucket, bucket,
+            atomic_store_explicit(&prof_host_pairs[i].pc_bucket, pair_pc_bucket,
                                   memory_order_relaxed);
             atomic_store_explicit(&prof_host_pairs[i].lr_bucket, lr_bucket,
                                   memory_order_relaxed);
@@ -734,8 +738,9 @@ size_t ish_profile_describe(char *buf, size_t size) {
         if (top_host_pc[c][0].samples == 0)
             continue;
         used = profile_append(buf, size, used,
-                              "  hottest %s host PCs (256-byte buckets, representative sample PC):\n",
-                              host_pc_category_names[c]);
+                              "  hottest %s host PCs (%u-byte buckets, representative sample PC):\n",
+                              host_pc_category_names[c],
+                              1u << ISH_PROFILE_HOST_PC_SHIFT);
         for (unsigned i = 0; i < ISH_PROFILE_SYSCALL_TOP &&
                                 top_host_pc[c][i].samples != 0; i++) {
             char pc_label[192];

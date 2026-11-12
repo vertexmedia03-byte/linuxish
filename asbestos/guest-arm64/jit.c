@@ -783,10 +783,10 @@ static uint32_t remap(struct em *e, uint32_t x, int kd, int kn, int km, int ka, 
 // Inline TLB lookup for guest address in T_A (bytes = access size); leaves
 // the host address in T_A. Branches to the unit's stub on a miss or crossing.
 static void tlb_lookup(struct em *e, unsigned bytes, bool write, unsigned spos) {
-    unsigned profile_start = e->n;
     // A translated host access may fault; keep guest state recoverable first.
     flush_dirty(e);
     e->hflags = false;   // the checks below use cmp
+    unsigned profile_start = e->n;
     put(e, 0xCA400000u | (T_A << 16) | (13u << 10) | (T_A << 5) | T_I);  // eor x10, x9, x9, lsr #13
     put(e, 0xD3400000u | (12u << 16) | (24u << 10) | (T_I << 5) | T_I); // ubfx x10, x10, #12, #13
     put(e, 0x9240BC00u | (T_A << 5) | T_A);                    // and x9, x9, #0xffffffffffff
