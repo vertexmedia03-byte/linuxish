@@ -3732,8 +3732,8 @@ void jit_module_path(int mod, char *buf, size_t size) {
     pthread_mutex_unlock(&cm_lock);
 }
 
-bool jit_host_pc_guest(uintptr_t pc, int *module, uint64_t *off, uint64_t *guest_pc,
-                       unsigned *units, bool *in_tlb) {
+bool jit_host_pc_segment(uintptr_t pc, int *module, uint64_t *off, uint64_t *guest_pc,
+                         unsigned *units, bool *in_tlb) {
     bool found = false;
     pthread_mutex_lock(&cm_lock);
     for (size_t i = cm_nsegs; i > 0; i--) {

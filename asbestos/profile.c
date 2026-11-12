@@ -486,7 +486,7 @@ static void profile_host_pc_label(char *buf, size_t size, uintptr_t pc) {
         bool in_tlb;
         uint64_t host_bucket = jit_offset &
             ~((UINT64_C(1) << ISH_PROFILE_HOST_PC_SHIFT) - 1);
-        if (jit_host_pc_guest(pc, &module, &guest_off, &guest_pc, &units, &in_tlb)) {
+        if (jit_host_pc_segment(pc, &module, &guest_off, &guest_pc, &units, &in_tlb)) {
             char path[256];
             if (module >= 0)
                 jit_module_path(module, path, sizeof(path));
