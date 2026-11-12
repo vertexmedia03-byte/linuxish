@@ -114,8 +114,11 @@ int jit_prof_locate(struct tlb *tlb, addr_t pc, uint64_t *off);
 void jit_module_path(int mod, char *buf, size_t size);
 bool jit_host_pc_is_translated(uintptr_t pc);
 bool jit_host_pc_offset(uintptr_t pc, uint64_t *off);
+// For dynamic JIT code, resolve an exact host instruction to its guest unit
+// (when emitted for one), TLB-check status, and machine instruction words.
 bool jit_host_pc_segment(uintptr_t pc, int *module, uint64_t *off, uint64_t *guest_pc,
-                         unsigned *units, bool *in_tlb);
+                         unsigned *units, bool *in_tlb, bool *in_guest_op,
+                         uint32_t *guest_insn, uint32_t *host_insn);
 
 // Host fault in native code: sync pinned guest registers into cpu_state.
 bool jit_crash_sync(void *ucontext);

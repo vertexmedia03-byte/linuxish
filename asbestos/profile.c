@@ -478,6 +478,21 @@ static size_t profile_append(char *buf, size_t size, size_t used, const char *fo
     return (size_t) n >= size - used ? size - 1 : used + (size_t) n;
 }
 
+#ifdef ISH_JIT
+static const char *profile_jit_kind(bool in_tlb, bool in_guest_op, uint32_t host_insn) {
+    if (in_tlb)
+        return "iSH TLB";
+    if (in_guest_op && ((host_insn >> 5) & 31) == 1) {
+        uint32_t op = host_insn & 0xFFC00000u;
+        if (op == 0xF9000000u || op == 0xB9000000u || op == 0x3D800000u)
+            return "iSH spill";
+        if (op == 0xF9400000u || op == 0xB9400000u || op == 0x3DC00000u)
+            return "iSH reload";
+    }
+    return in_guest_op ? "guest-op lowering" : "JIT scaffold";
+}
+#endif
+
 static void profile_host_pc_label(char *buf, size_t size, uintptr_t pc) {
     bool translated = false;
 #ifdef ISH_JIT
@@ -487,10 +502,12 @@ static void profile_host_pc_label(char *buf, size_t size, uintptr_t pc) {
         int module;
         uint64_t guest_off, guest_pc;
         unsigned units;
-        bool in_tlb;
+        uint32_t guest_insn, host_insn;
+        bool in_tlb, in_guest_op;
         uint64_t host_bucket = jit_offset &
             ~((UINT64_C(1) << ISH_PROFILE_HOST_PC_SHIFT) - 1);
-        if (jit_host_pc_segment(pc, &module, &guest_off, &guest_pc, &units, &in_tlb)) {
+        if (jit_host_pc_segment(pc, &module, &guest_off, &guest_pc, &units, &in_tlb,
+                                &in_guest_op, &guest_insn, &host_insn)) {
             char path[256];
             if (module >= 0)
                 jit_module_path(module, path, sizeof(path));
@@ -498,10 +515,20 @@ static void profile_host_pc_label(char *buf, size_t size, uintptr_t pc) {
                 snprintf(path, sizeof(path), "[unmapped]");
             const char *name = strrchr(path, '/');
             name = name ? name + 1 : path;
-            snprintf(buf, size, "translated+0x%llx -> %s+0x%llx (segment PC 0x%llx, %u units%s)",
-                     (unsigned long long) host_bucket, name,
-                     (unsigned long long) guest_off, (unsigned long long) guest_pc, units,
-                     in_tlb ? ", inline TLB" : "");
+            const char *kind = profile_jit_kind(in_tlb, in_guest_op, host_insn);
+            if (in_guest_op) {
+                snprintf(buf, size,
+                         "translated+0x%llx -> %s+0x%llx (guest PC 0x%llx, %s, %08x -> %08x)",
+                         (unsigned long long) host_bucket, name,
+                         (unsigned long long) guest_off, (unsigned long long) guest_pc,
+                         kind, guest_insn, host_insn);
+            } else {
+                snprintf(buf, size,
+                         "translated+0x%llx -> %s+0x%llx (segment PC 0x%llx, %u units, JIT scaffold, host %08x)",
+                         (unsigned long long) host_bucket, name,
+                         (unsigned long long) guest_off, (unsigned long long) guest_pc, units,
+                         host_insn);
+            }
         } else {
             snprintf(buf, size, "translated+0x%llx (host PC 0x%llx)",
                      (unsigned long long) host_bucket, (unsigned long long) pc);

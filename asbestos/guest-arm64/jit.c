@@ -325,6 +325,10 @@ enum { T_P = 8, T_A = 9, T_I = 10, T_E = 11, T_Q = 12 };
 enum { REL_SYM, REL_EXIT };
 
 struct jit_tlb_range { unsigned start, end; };
+#ifdef ISH_PROFILE
+struct jit_guest_range { uint16_t start, end; uint64_t pc; uint32_t insn; };
+#define JIT_PROFILE_GUEST_RANGES (2 * JIT_MAX_UNITS)
+#endif
 
 // A recorded segment (ISH_JIT_RECORD): the code as emitted, before links are
 // patched in, and what an exporter needs to place it elsewhere.
@@ -347,6 +351,10 @@ struct em {
     unsigned n;
     struct jit_tlb_range tlb_ranges[1024];
     unsigned ntlb_ranges;
+#ifdef ISH_PROFILE
+    struct jit_guest_range guest_ranges[JIT_PROFILE_GUEST_RANGES];
+    unsigned nguests;
+#endif
     int8_t host[33];
     uint8_t npool;
     int8_t owner[32];      // host register -> guest register (lazy pool), -1 free
@@ -2305,6 +2313,9 @@ static unsigned emit_segment(struct em *e, struct fiber_block *b, const struct j
     e->victim = 0;
     e->n = 0;
     e->ntlb_ranges = 0;
+#ifdef ISH_PROFILE
+    e->nguests = 0;
+#endif
     e->nfix = 0;
     e->nrel = 0;
     e->link_at[0] = e->link_at[1] = -1;
@@ -2372,6 +2383,10 @@ static unsigned emit_segment(struct em *e, struct fiber_block *b, const struct j
             break;
         // snapshot for rollback
         unsigned n0 = e->n, nfix0 = e->nfix, nrel0 = e->nrel;
+        unsigned tlb_ranges0 = e->ntlb_ranges;
+#ifdef ISH_PROFILE
+        unsigned guest_ranges0 = e->nguests;
+#endif
         uint8_t npool0 = e->npool, victim0 = e->victim;
         bool hf0 = e->hflags;
         bool defer0 = e->defer_writes;
@@ -2383,11 +2398,19 @@ static unsigned emit_segment(struct em *e, struct fiber_block *b, const struct j
         unsigned failed_k = 0;
         for (unsigned k = 0; ok && k < u->n && !u->follow; k++) {
             bool has_mem = false;
+            unsigned guest_start = e->n;
             ok = emit_insn(e, u->w[k], u->pc + 4 * k, u->start, &has_mem) && !e->fail;
             // A bailout re-runs the whole unit's gadget, so everything the
             // unit did before the access must be safe to redo.
             if (has_mem && k > 0 && !pure) ok = false;
             pure &= is_pure_const(u->w[k]);
+#ifdef ISH_PROFILE
+            if (ok && cm_on && e->n > guest_start &&
+                e->nguests < JIT_PROFILE_GUEST_RANGES) {
+                e->guest_ranges[e->nguests++] = (struct jit_guest_range) {
+                    (uint16_t) guest_start, (uint16_t) e->n, u->pc + 4 * k, u->w[k]};
+            }
+#endif
             if (!ok) {
                 failed_k = k;
                 if (!has_mem)
@@ -2405,6 +2428,10 @@ static unsigned emit_segment(struct em *e, struct fiber_block *b, const struct j
             }
 #endif
             e->n = n0; e->nfix = nfix0; e->nrel = nrel0; e->npool = npool0; e->fail = false; e->hflags = hf0;
+            e->ntlb_ranges = tlb_ranges0;
+#ifdef ISH_PROFILE
+            e->nguests = guest_ranges0;
+#endif
             e->victim = victim0;
             e->dirty = dirty0;
             e->defer_writes = defer0;
@@ -3580,7 +3607,9 @@ bool jit_crash_sync(void *ucontext) {
 //   M <id> <blocks> <translated units> <segments> <code bytes> <path>
 //   S <host code> <words> <id> <file offset of the first unit> <guest pc> <units> <first insn>
 //   T <host code> <words> for inline TLB lookup/check sequences
-// Host PC samples resolve to modules through S, or to inline TLB checks through T.
+//   I <host code> <words> <id> <file offset> <guest pc> <guest insn>
+// Host PC samples resolve to guest instructions through I, or to other
+// translated code through S and inline TLB checks through T.
 // The module identity is also what a recorder needs to find code in another process.
 
 // A module is one file build: its ELF build-id when it has one (wherever it
@@ -3592,6 +3621,13 @@ struct cm_module {
 };
 struct cm_segment { uint64_t code, off, pc; uint32_t words, units, insn; int mod; };
 struct cm_tlb_range { uint64_t code; uint32_t words; };
+#ifdef ISH_PROFILE
+struct cm_guest_range {
+    uint64_t code, off, pc;
+    uint32_t words, insn;
+    int mod;
+};
+#endif
 static pthread_mutex_t cm_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct cm_module *cm_mods;
 static unsigned cm_nmods, cm_capmods;
@@ -3599,6 +3635,10 @@ static struct cm_segment *cm_segs;
 static size_t cm_nsegs, cm_capsegs;
 static struct cm_tlb_range *cm_tlb_ranges;
 static size_t cm_ntlb_ranges, cm_captlb_ranges;
+#ifdef ISH_PROFILE
+static struct cm_guest_range *cm_guest_ranges;
+static size_t cm_nguest_ranges, cm_capguest_ranges;
+#endif
 static bool cm_count_blocks;
 
 // NT_GNU_BUILD_ID of the ELF file behind fd (at most 20 bytes); 0 if none.
@@ -3733,7 +3773,8 @@ void jit_module_path(int mod, char *buf, size_t size) {
 }
 
 bool jit_host_pc_segment(uintptr_t pc, int *module, uint64_t *off, uint64_t *guest_pc,
-                         unsigned *units, bool *in_tlb) {
+                         unsigned *units, bool *in_tlb, bool *in_guest_op,
+                         uint32_t *guest_insn, uint32_t *host_insn) {
     bool found = false;
     pthread_mutex_lock(&cm_lock);
     for (size_t i = cm_nsegs; i > 0; i--) {
@@ -3745,6 +3786,9 @@ bool jit_host_pc_segment(uintptr_t pc, int *module, uint64_t *off, uint64_t *gue
         if (off) *off = seg->off;
         if (guest_pc) *guest_pc = seg->pc;
         if (units) *units = seg->units;
+        if (in_guest_op) *in_guest_op = false;
+        if (guest_insn) *guest_insn = 0;
+        if (host_insn) *host_insn = 0;
         if (in_tlb) {
             *in_tlb = false;
             for (size_t j = 0; j < cm_ntlb_ranges; j++) {
@@ -3755,6 +3799,22 @@ bool jit_host_pc_segment(uintptr_t pc, int *module, uint64_t *off, uint64_t *gue
                 }
             }
         }
+#ifdef ISH_PROFILE
+        for (size_t j = cm_nguest_ranges; j > 0; j--) {
+            const struct cm_guest_range *range = &cm_guest_ranges[j - 1];
+            if (pc < range->code || pc - range->code >= 4 * (uint64_t) range->words)
+                continue;
+            if (module) *module = range->mod;
+            if (off) *off = range->off;
+            if (guest_pc) *guest_pc = range->pc;
+            if (in_guest_op) *in_guest_op = true;
+            if (guest_insn) *guest_insn = range->insn;
+            break;
+        }
+#endif
+        if (host_insn && pc % 4 == 0 &&
+            pc - start + 4 <= 4 * (uint64_t) seg->words)
+            *host_insn = __atomic_load_n((const uint32_t *) pc, __ATOMIC_RELAXED);
         found = true;
         break;
     }
@@ -3986,6 +4046,24 @@ static void cm_segment(const struct jit_units *U, unsigned first, unsigned end,
     }
     cm_segs[cm_nsegs++] = (struct cm_segment) {
         (uint64_t) (uintptr_t) code, off, U->u[first].pc, words, end - first, U->u[first].w[0], mod};
+#ifdef ISH_PROFILE
+    for (unsigned i = 0; i < e->nguests; i++) {
+        const struct jit_guest_range *source = &e->guest_ranges[i];
+        uint64_t guest_off;
+        int guest_mod = cm_locate(source->pc, &guest_off, NULL);
+        if (cm_nguest_ranges == cm_capguest_ranges) {
+            size_t cap = cm_capguest_ranges ? 2 * cm_capguest_ranges : 65536;
+            struct cm_guest_range *n = realloc(cm_guest_ranges, cap * sizeof(*n));
+            if (!n)
+                break;
+            cm_guest_ranges = n;
+            cm_capguest_ranges = cap;
+        }
+        cm_guest_ranges[cm_nguest_ranges++] = (struct cm_guest_range) {
+            (uint64_t) (uintptr_t) code + 4 * (uint64_t) source->start,
+            guest_off, source->pc, source->end - source->start, source->insn, guest_mod};
+    }
+#endif
     for (unsigned i = 0; i < e->ntlb_ranges; i++) {
         if (cm_ntlb_ranges == cm_captlb_ranges) {
             size_t cap = cm_captlb_ranges ? 2 * cm_captlb_ranges : 1024;
@@ -4017,6 +4095,13 @@ static void cm_write(const char *path) {
                 cm_segs[i].units, cm_segs[i].insn);
     for (size_t i = 0; i < cm_ntlb_ranges; i++)
         fprintf(f, "T %llx %u\n", (unsigned long long) cm_tlb_ranges[i].code, cm_tlb_ranges[i].words);
+#ifdef ISH_PROFILE
+    for (size_t i = 0; i < cm_nguest_ranges; i++)
+        fprintf(f, "I %llx %u %d %llx %llx %08x\n",
+                (unsigned long long) cm_guest_ranges[i].code, cm_guest_ranges[i].words,
+                cm_guest_ranges[i].mod, (unsigned long long) cm_guest_ranges[i].off,
+                (unsigned long long) cm_guest_ranges[i].pc, cm_guest_ranges[i].insn);
+#endif
     pthread_mutex_unlock(&cm_lock);
     fclose(f);
 }
