@@ -101,6 +101,44 @@
     gret
     read_bullshit 32, load32_reg_fast_1
 
+.gadget load16_reg_fast
+    ldr x22, [_pc], #8
+    ubfx x9, x22, #8, #5
+    ubfx x10, x22, #16, #5
+    ubfx x12, x22, #24, #3
+    add x23, _cpu, #CPU_x0
+    ldr x14, [x23, x9, lsl #3]
+    ldr x15, [x23, x10, lsl #3]
+    lsl x15, x15, x12
+    add _addr, x14, x15
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+    read_prep 16, load16_reg_fast_1
+    ldrh w0, [_addr]
+    and x8, x22, #0x1f
+    str x0, [x23, x8, lsl #3]
+    gret
+    read_bullshit 16, load16_reg_fast_1
+
+.gadget load8_reg_fast
+    ldr x22, [_pc], #8
+    ubfx x9, x22, #8, #5
+    ubfx x10, x22, #16, #5
+    ubfx x12, x22, #24, #3
+    add x23, _cpu, #CPU_x0
+    ldr x14, [x23, x9, lsl #3]
+    ldr x15, [x23, x10, lsl #3]
+    lsl x15, x15, x12
+    add _addr, x14, x15
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+    read_prep 8, load8_reg_fast_1
+    ldrb w0, [_addr]
+    and x8, x22, #0x1f
+    str x0, [x23, x8, lsl #3]
+    gret
+    read_bullshit 8, load8_reg_fast_1
+
 // LDUR Wd, [Xn, #imm9] — unscaled, signed 9-bit offset. Fused load 1/2/4/8 bytes.
 // Condition: rn != 31, rt != 31.
 // Param: rt<<0 | rn<<8 | offset<<16 (signed, 48 bits)
@@ -758,6 +796,86 @@
     mov _addr, x24
     gret
     read_bullshit 64, load64_add_imm_1
+
+.gadget load32_add_imm
+    ldr x22, [_pc], #8
+    ubfx x9, x22, #5, #5
+    ubfx x10, x22, #10, #12
+    lsl x10, x10, #2
+    add x11, _cpu, #CPU_x0
+    cmp x9, #31
+    b.eq 1f
+    ldr x12, [x11, x9, lsl #3]
+    b 2f
+1:  ldr x12, [_cpu, #CPU_sp]
+2:  add _addr, x12, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+    read_prep 32, load32_add_imm_1
+    ldr w0, [_addr]
+    ubfx x13, x22, #22, #12
+    ubfx x14, x22, #34, #1
+    lsl x13, x13, x14
+    add x0, x0, x13
+    and x9, x22, #0x1f
+    add x11, _cpu, #CPU_x0
+    str x0, [x11, x9, lsl #3]
+    mov _addr, x24
+    gret
+    read_bullshit 32, load32_add_imm_1
+
+.gadget load16_add_imm
+    ldr x22, [_pc], #8
+    ubfx x9, x22, #5, #5
+    ubfx x10, x22, #10, #12
+    lsl x10, x10, #1
+    add x11, _cpu, #CPU_x0
+    cmp x9, #31
+    b.eq 1f
+    ldr x12, [x11, x9, lsl #3]
+    b 2f
+1:  ldr x12, [_cpu, #CPU_sp]
+2:  add _addr, x12, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+    read_prep 16, load16_add_imm_1
+    ldrh w0, [_addr]
+    ubfx x13, x22, #22, #12
+    ubfx x14, x22, #34, #1
+    lsl x13, x13, x14
+    add x0, x0, x13
+    and x9, x22, #0x1f
+    add x11, _cpu, #CPU_x0
+    str x0, [x11, x9, lsl #3]
+    mov _addr, x24
+    gret
+    read_bullshit 16, load16_add_imm_1
+
+.gadget load8_add_imm
+    ldr x22, [_pc], #8
+    ubfx x9, x22, #5, #5
+    ubfx x10, x22, #10, #12
+    add x11, _cpu, #CPU_x0
+    cmp x9, #31
+    b.eq 1f
+    ldr x12, [x11, x9, lsl #3]
+    b 2f
+1:  ldr x12, [_cpu, #CPU_sp]
+2:  add _addr, x12, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+    read_prep 8, load8_add_imm_1
+    ldrb w0, [_addr]
+    ubfx x13, x22, #22, #12
+    ubfx x14, x22, #34, #1
+    lsl x13, x13, x14
+    add x0, x0, x13
+    and x9, x22, #0x1f
+    add x11, _cpu, #CPU_x0
+    str x0, [x11, x9, lsl #3]
+    mov _addr, x24
+    gret
+    read_bullshit 8, load8_add_imm_1
 
 // LDR Wd, [Xn, #imm] - fast path (rn!=31, rd!=31)
 .gadget load32_imm_fast

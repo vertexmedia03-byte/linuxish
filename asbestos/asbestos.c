@@ -1023,6 +1023,7 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
 #ifdef GUEST_ARM64
                 unsigned compile_gen =
                     atomic_load_explicit(&asbestos->invalidate_gen, memory_order_acquire);
+                unsigned compile_retries = 0;
                 unlock(&asbestos->lock);
                 while (block == NULL) {
                     struct fiber_block *compiled =
@@ -1044,6 +1045,26 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
                                              memory_order_acquire) != compile_gen) {
                         unlock(&asbestos->lock);
                         fiber_block_free(NULL, compiled);
+                        if (++compile_retries >= 8) {
+                            lock(&asbestos->lock);
+                            block = fiber_lookup(asbestos, ip);
+                            if (block == NULL) {
+                                block = fiber_block_compile_protected(asbestos, ip, tlb);
+                                if (block != NULL) {
+                                    fiber_insert(asbestos, block);
+                                    if (stage_trace_on())
+                                        atomic_fetch_add_explicit(&st_block_compile, 1,
+                                                                  memory_order_relaxed);
+                                }
+                            }
+                            unlock(&asbestos->lock);
+                            if (block == NULL) {
+                                interrupt = INT_GPF;
+                                frame->cpu.segfault_addr = 0;
+                                frame->cpu.segfault_was_write = 0;
+                            }
+                            break;
+                        }
                         lock(&asbestos->lock);
                         block = fiber_lookup(asbestos, ip);
                         compile_gen = atomic_load_explicit(&asbestos->invalidate_gen,

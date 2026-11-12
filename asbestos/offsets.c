@@ -4,6 +4,10 @@
 #include "emu/tlb.h"
 
 #ifdef GUEST_ARM64
+_Static_assert(sizeof(_Atomic unsigned) == sizeof(unsigned),
+        "ARM64 block-cache generation must remain a 32-bit atomic");
+_Static_assert(_Alignof(_Atomic unsigned) == _Alignof(unsigned),
+        "ARM64 block-cache generation alignment must match a plain unsigned");
 _Static_assert((offsetof(struct tlb, block_cache) -
         offsetof(struct tlb, entries)) % 4096 == 0,
         "ARM64 block-cache offset must be page aligned from TLB entries");

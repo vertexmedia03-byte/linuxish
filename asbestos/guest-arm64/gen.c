@@ -808,6 +808,9 @@ extern void gadget_load8_imm(void);
 extern void gadget_load32_sx_imm(void);
 extern void gadget_load64_imm_fast(void);
 extern void gadget_load64_add_imm(void);
+extern void gadget_load32_add_imm(void);
+extern void gadget_load16_add_imm(void);
+extern void gadget_load8_add_imm(void);
 extern void gadget_load32_imm_fast(void);
 extern void gadget_load16_imm_fast(void);
 extern void gadget_load8_imm_fast(void);
@@ -824,6 +827,8 @@ extern void gadget_load64_reg(void);
 extern void gadget_load32_reg(void);
 extern void gadget_load16_reg(void);
 extern void gadget_load8_reg(void);
+extern void gadget_load16_reg_fast(void);
+extern void gadget_load8_reg_fast(void);
 extern void gadget_load32_sx_reg(void);
 extern void gadget_store64_reg(void);
 extern void gadget_store32_reg(void);
@@ -1108,11 +1113,15 @@ int gen_step(struct gen_state *state, struct tlb *tlb) {
         }
     }
 
-    // Fuse LDR Xd,[Xn,#imm] followed by ADD Xd,Xd,#imm into one gadget.
-    // Both operations are non-faulting after the load, so the load remains
-    // the precise faulting instruction while the result matches the pair.
+    // Fuse unsigned scalar LDR followed by ADD Xd,Xd,#imm into one gadget.
+    // Both operations are non-faulting after the load, so a load fault remains
+    // attributed to the first instruction.
+    uint32_t load_size = (insn >> 30) & 3;
     if (!state->units && !g_trace_highbits &&
-            (insn & 0xffc00000u) == 0xf9400000u) {
+            ((insn & 0xffc00000u) == 0x39400000u ||
+             (insn & 0xffc00000u) == 0x79400000u ||
+             (insn & 0xffc00000u) == 0xb9400000u ||
+             (insn & 0xffc00000u) == 0xf9400000u)) {
         uint32_t load_rd = insn & 0x1f;
         uint32_t load_rn = (insn >> 5) & 0x1f;
         uint32_t load_imm12 = (insn >> 10) & 0xfff;
@@ -1128,7 +1137,15 @@ int gen_step(struct gen_state *state, struct tlb *tlb) {
                     ((uint64_t)load_imm12 << 10) |
                     ((uint64_t)add_imm12 << 22) |
                     ((uint64_t)add_shift << 34);
-                gen(state, (unsigned long)gadget_load64_add_imm);
+                void *gadget;
+                switch (load_size) {
+                    case 0: gadget = gadget_load8_add_imm; break;
+                    case 1: gadget = gadget_load16_add_imm; break;
+                    case 2: gadget = gadget_load32_add_imm; break;
+                    case 3: gadget = gadget_load64_add_imm; break;
+                    default: gen_interrupt(state, INT_UNDEFINED); return 0;
+                }
+                gen(state, (unsigned long)gadget);
                 gen(state, param);
                 state->ip += sizeof(uint32_t);
                 return 1;
@@ -2832,6 +2849,16 @@ static int gen_ldst(struct gen_state *state, uint32_t insn) {
             }
             if (fast_load && size == 2) {
                 gen(state, (unsigned long) gadget_load32_reg_fast);
+                gen(state, fused_param);
+                return 1;
+            }
+            if (fast_load && size == 1) {
+                gen(state, (unsigned long) gadget_load16_reg_fast);
+                gen(state, fused_param);
+                return 1;
+            }
+            if (fast_load && size == 0) {
+                gen(state, (unsigned long) gadget_load8_reg_fast);
                 gen(state, fused_param);
                 return 1;
             }

@@ -119,6 +119,18 @@ else
         status=1
     fi
 
+    echo
+    echo "########## ARM64 load fusions ##########"
+    if "$CC_GUEST" -static -O0 -Wall -o "$GUEST_ROOT/tmp/regress_arm64_load_fusions" \
+            tests/regress/regress_arm64_load_fusions.c \
+            tests/regress/regress_arm64_load_fusions.S; then
+        "$ISH" "$MOUNT_FLAG" "$ROOTFS" /tmp/regress_arm64_load_fusions || status=1
+        rm -f "$GUEST_ROOT/tmp/regress_arm64_load_fusions"
+    else
+        echo "failed to build regress_arm64_load_fusions" >&2
+        status=1
+    fi
+
     # AF_NETLINK stub: no read blocks without bound; links and addresses are
     # the host's; everything else is refused at once. The second run pins
     # the ISH_NETLINK_ROUTE=empty switch (read from the host environment).
