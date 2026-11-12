@@ -269,7 +269,13 @@ void task_run_current() {
 static void *task_thread(void *vtask) {
     current = vtask;
     update_thread_name();
+#ifdef ISH_PROFILE
+    ish_profile_task_thread_enter();
+#endif
     task_run_current();
+#ifdef ISH_PROFILE
+    ish_profile_task_thread_leave();
+#endif
     die("task_thread returned"); // above function call should never return
 }
 

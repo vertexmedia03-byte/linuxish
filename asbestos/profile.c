@@ -20,6 +20,8 @@
 #include <sys/time.h>
 #include <ucontext.h>
 extern __thread volatile sig_atomic_t in_jit;
+static __thread volatile sig_atomic_t prof_guest_task_active;
+static __thread volatile sig_atomic_t prof_host_sampling_suppressed;
 #else
 #define ISH_PROFILE_HOST_PC_SAMPLER 0
 #endif
@@ -92,7 +94,8 @@ static bool prof_host_sampler_installed;
 static void profile_host_pc_signal(int sig, siginfo_t *info, void *context) {
     (void) sig;
     (void) info;
-    if (!ish_profile_active())
+    if (!ish_profile_active() || !prof_guest_task_active ||
+        prof_host_sampling_suppressed)
         return;
     const ucontext_t *uc = context;
     uintptr_t pc = (uintptr_t) uc->uc_mcontext->__ss.__pc;
@@ -113,6 +116,18 @@ bool ish_profile_active(void) {
 
 bool ish_profile_cpu_clock_enabled(void) {
     return atomic_load_explicit(&prof_cpu_clock_enabled, memory_order_relaxed);
+}
+
+void ish_profile_task_thread_enter(void) {
+#if ISH_PROFILE_HOST_PC_SAMPLER
+    prof_guest_task_active = 1;
+#endif
+}
+
+void ish_profile_task_thread_leave(void) {
+#if ISH_PROFILE_HOST_PC_SAMPLER
+    prof_guest_task_active = 0;
+#endif
 }
 
 uint64_t ish_profile_ticks(void) {
@@ -142,7 +157,14 @@ bool ish_profile_thread_cpu_time(uint64_t *nanoseconds) {
         return false;
 #if defined(CLOCK_THREAD_CPUTIME_ID)
     struct timespec ts;
-    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0)
+#if ISH_PROFILE_HOST_PC_SAMPLER
+    prof_host_sampling_suppressed = 1;
+#endif
+    int result = clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+#if ISH_PROFILE_HOST_PC_SAMPLER
+    prof_host_sampling_suppressed = 0;
+#endif
+    if (result != 0)
         return false;
     *nanoseconds = (uint64_t) ts.tv_sec * 1000000000 + (uint64_t) ts.tv_nsec;
     return true;
@@ -316,7 +338,7 @@ void ish_profile_record_host_pc(uintptr_t pc, uintptr_t lr, bool translated,
     if (!pc_recorded)
         atomic_fetch_add_explicit(&prof_host_pc_dropped_samples, 1, memory_order_relaxed);
 
-    if (!guest_engine_active)
+    if (translated)
         return;
 
     uint64_t lr_bucket = (uint64_t) lr &
@@ -665,8 +687,8 @@ size_t ish_profile_describe(char *buf, size_t size) {
                              memory_order_relaxed);
 #if ISH_PROFILE_HOST_PC_SAMPLER
     used = profile_append(buf, size, used,
-                          "host PC samples (SIGPROF, 1 ms; process CPU): %llu total, %llu translated guest code, %llu native/helper in fiber_enter, %llu host runtime outside fiber_enter, %llu PC buckets dropped, %llu caller pairs dropped\n"
-                          "  outside-fiber samples include dispatch, JIT compilation, syscall handling, and other active app threads.\n"
+                          "host PC samples (SIGPROF, 1 ms; guest task threads): %llu total, %llu translated guest code, %llu native/helper in fiber_enter, %llu host runtime outside fiber_enter, %llu PC buckets dropped, %llu caller pairs dropped\n"
+                          "  outside-fiber samples include guest dispatch, JIT compilation, and syscall handling; unrelated app threads are excluded.\n"
                           "  unresolved PC/image addresses can be symbolicated with atos and the matching dSYM artifact.\n",
                           (unsigned long long) (host_translated_samples +
                                                 host_guest_native_samples +
@@ -706,7 +728,7 @@ size_t ish_profile_describe(char *buf, size_t size) {
     }
     if (top_host_pair[0].samples != 0)
         used = profile_append(buf, size, used,
-                              "  hottest host PC -> caller pairs during fiber_enter (256-byte buckets):\n");
+                              "  hottest native host PC -> caller pairs on guest task threads (256-byte buckets):\n");
     for (unsigned i = 0; i < ISH_PROFILE_SYSCALL_TOP && top_host_pair[i].samples != 0; i++) {
         char pc_label[192], lr_label[192];
         profile_host_pc_label(pc_label, sizeof(pc_label),
