@@ -286,7 +286,7 @@ static void jit_segment_installed(struct fiber_block *b, const struct jit_units 
 // into the lazy pool and spilled on eviction or before a side exit. x8-x12
 // are scratch, x28 = stream pointer at exits, x1 = cpu, x2 = tlb, x18 platform,
 // x29/x30/sp untouched.
-static const int8_t pin_guest[] = {0, G_SP, 1, 2, 19, 3, 4, 21, 20, 22, 23, 30, 29, 8, 9, 10};
+static const int8_t pin_guest[] = {0, G_SP, 1, 2, 19, 3, 4, 21, 20, 22, 23, 30, 29, 24, 6, 5};
 static const int8_t pin_host[]  = {19, 20, 21, 22, 23, 24, 25, 26, 27, 3, 4, 5, 6, 7, 13, 14};
 static const uint8_t lazy_pool[] = {16, 17, 0};
 #define H_CYC 15   // pinned mode: cpu->cycle lives in w15 between cold entry and exit
@@ -412,7 +412,7 @@ static void flush_dirty(struct em *e) {
 
 // host register holding guest register g (0..30 or G_SP), loading it on first
 // use. When the pool is full, an unused mapping can be spilled and dropped.
-static int hreg_ex(struct em *e, int g, bool is_write_only) {
+static int hreg(struct em *e, int g) {
     if (e->uses[g] < 0xffff) e->uses[g]++;
     if (e->pin[g] >= 0)
         return e->pin[g];
@@ -447,17 +447,8 @@ static int hreg_ex(struct em *e, int g, bool is_write_only) {
     e->host[g] = (int8_t) h;
     e->owner[h] = (int8_t) g;
     e->locked |= 1u << h;
-    if (!is_write_only)
-        put(e, 0xF9400000u | ((greg_off(g) / 8) << 10) | (1u << 5) | (uint32_t) h);  // ldr xh, [x1, #off]
+    put(e, 0xF9400000u | ((greg_off(g) / 8) << 10) | (1u << 5) | (uint32_t) h);  // ldr xh, [x1, #off]
     return h;
-}
-
-static inline int hreg(struct em *e, int g) {
-    return hreg_ex(e, g, false);
-}
-
-static inline int hreg_dest(struct em *e, int g) {
-    return hreg_ex(e, g, true);
 }
 
 static void writeback(struct em *e, int g) {
@@ -779,7 +770,9 @@ static uint32_t remap(struct em *e, uint32_t x, int kd, int kn, int km, int ka, 
         } else {
             g = r;
         }
-        int h = (f == 0 && !rd_read) ? hreg_dest(e, g) : hreg(e, g);
+        if (f != 0 || rd_read)
+            (void) hreg(e, g);
+        int h = hreg(e, g);
         out = (out & ~(31u << shift[f])) | ((uint32_t) h << shift[f]);
         if (f == 0)
             *wrote = g;
@@ -901,7 +894,7 @@ static bool emit_simd(struct em *e, uint32_t x) {
     if ((x & 0xBFE0FC00u) == 0x0E003C00u) {                                   // umov / mov (to general)
         vload(e, V_N, rn);
         if (rd == 31) return true;
-        int hd = hreg_dest(e, rd);
+        int hd = hreg(e, rd);
         put(e, (x & ~0x3FFu) | (V_N << 5) | (uint32_t) hd);
         writeback(e, rd);
         return true;
@@ -930,7 +923,7 @@ static bool emit_simd(struct em *e, uint32_t x) {
     if (fm == 0x9E660000u || fm == 0x1E260000u) {                              // fmov x, d / w, s
         vload(e, V_N, rn);
         if (rd == 31) return true;
-        int hd = hreg_dest(e, rd);
+        int hd = hreg(e, rd);
         put(e, fm | (V_N << 5) | (uint32_t) hd);
         writeback(e, rd);
         return true;
@@ -1014,7 +1007,7 @@ static bool emit_fp_scalar(struct em *e, uint32_t x) {
             vstore(e, V_D, rd);
         } else {
             vload(e, V_N, rn);
-            int hd = rd == 31 ? 31 : hreg_dest(e, rd);
+            int hd = rd == 31 ? 31 : hreg(e, rd);
             put(e, (x & ~0x3FFu) | ((uint32_t) V_N << 5) | (uint32_t) hd);
             if (rd != 31) writeback(e, rd);
         }
@@ -1164,8 +1157,7 @@ static bool emit_ldst(struct em *e, uint32_t x, unsigned spos, bool *has_mem) {
         else if (imm >= 0) put(e, 0x91000000u | ((uint32_t) imm << 10) | ((uint32_t) hn << 5) | T_A);
         else put(e, 0xD1000000u | ((uint32_t) -imm << 10) | ((uint32_t) hn << 5) | T_A);
         tlb_lookup(e, 2u << scale, !L, spos);
-        int ht = rt == 31 ? 31 : (L ? hreg_dest(e, rt) : hreg(e, rt));
-        int ht2 = rt2 == 31 ? 31 : (L ? hreg_dest(e, rt2) : hreg(e, rt2));
+        int ht = rt == 31 ? 31 : hreg(e, rt), ht2 = rt2 == 31 ? 31 : hreg(e, rt2);
         // host pair access, signed-offset form, offset 0
         put(e, (x & 0xC0400000u) | 0x29000000u | ((uint32_t) ht2 << 10) | (T_A << 5) | (uint32_t) ht);
         if (L) {
@@ -1226,7 +1218,7 @@ static bool emit_ldst(struct em *e, uint32_t x, unsigned spos, bool *has_mem) {
     }
     tlb_lookup(e, 1u << size, !load, spos);
     {
-        int ht = rt == 31 ? 31 : (load ? hreg_dest(e, rt) : hreg(e, rt));
+        int ht = rt == 31 ? 31 : hreg(e, rt);
         put(e, (x & 0xC0C00000u) | 0x39000000u | (T_A << 5) | (uint32_t) ht);   // host access: same size/opc, [x9]
         if (load && rt != 31)
             writeback(e, rt);
@@ -1271,7 +1263,7 @@ static bool emit_insn(struct em *e, uint32_t x, uint64_t pc, unsigned spos, bool
         int64_t imm = sext(((x >> 5) & 0x7ffff) << 2 | ((x >> 29) & 3), 21);
         uint64_t v = (x & 0x80000000u) ? (pc & ~0xfffULL) + ((uint64_t) imm << 12) : pc + (uint64_t) imm;
         if (rd == 31) return true;
-        int h = hreg_dest(e, rd);
+        int h = hreg(e, rd);
         mov_guest_ref(e, h, v, T_Q);
         writeback(e, rd);
         return true;
@@ -1282,7 +1274,7 @@ static bool emit_insn(struct em *e, uint32_t x, uint64_t pc, unsigned spos, bool
     if (sysreg == 0xD53B4200u) { // MRS Xt, NZCV
         int rt = x & 31;
         if (rt != 31) {
-            int h = hreg_dest(e, rt);
+            int h = hreg(e, rt);
             if (e->hflags)
                 put(e, 0xD53B4200u | (uint32_t) h);
             else
@@ -1309,7 +1301,7 @@ static bool emit_insn(struct em *e, uint32_t x, uint64_t pc, unsigned spos, bool
     if (sysreg == 0xD53B2400u || sysreg == 0xD53B2420u) { // RNDR / RNDRRS
         int rt = x & 31;
         if (rt != 31) {
-            int h = hreg_dest(e, rt);
+            int h = hreg(e, rt);
             put(e, 0xD2800000u | (uint32_t) h); // movz xh, #0
             writeback(e, rt);
         }
@@ -1334,7 +1326,7 @@ static bool emit_insn(struct em *e, uint32_t x, uint64_t pc, unsigned spos, bool
             ? offsetof(struct cpu_state, fpcr) : offsetof(struct cpu_state, fpsr);
         int rt = x & 31;
         if (rt != 31) {
-            int h = hreg_dest(e, rt);
+            int h = hreg(e, rt);
             put(e, 0xB9400000u | ((offset / 4) << 10) | (1u << 5) | (uint32_t) h);
             writeback(e, rt);
         }
@@ -1344,7 +1336,7 @@ static bool emit_insn(struct em *e, uint32_t x, uint64_t pc, unsigned spos, bool
     case 0xD53BE000u: {                             // CNTFRQ_EL0
         int rt = x & 31;
         if (rt != 31) {
-            int h = hreg_dest(e, rt);
+            int h = hreg(e, rt);
             put(e, (x & ~31u) | (uint32_t) h);
             writeback(e, rt);
         }
@@ -1357,7 +1349,7 @@ static bool emit_insn(struct em *e, uint32_t x, uint64_t pc, unsigned spos, bool
     if (sysreg_constant) {
         int rt = x & 31;
         if (rt != 31) {
-            int h = hreg_dest(e, rt);
+            int h = hreg(e, rt);
             mov_imm64(e, h, sysreg_value);
             writeback(e, rt);
         }
@@ -1366,7 +1358,7 @@ static bool emit_insn(struct em *e, uint32_t x, uint64_t pc, unsigned spos, bool
     if ((x & 0xFFFFFFE0u) == 0xD53BD040u || (x & 0xFFFFFFE0u) == 0xD51BD040u) {   // mrs/msr tpidr_el0
         int rt = x & 31;
         bool read = (x & 0x00200000u) != 0;
-        int h = rt == 31 ? 31 : (read ? hreg_dest(e, rt) : hreg(e, rt));
+        int h = rt == 31 ? 31 : hreg(e, rt);
         put(e, (read ? 0xF9400000u : 0xF9000000u) | ((CPU_tls_ptr / 8) << 10) | (1u << 5) | (uint32_t) h);
         if (read && rt != 31) writeback(e, rt);
         return true;
@@ -1425,37 +1417,18 @@ static bool emit_insn(struct em *e, uint32_t x, uint64_t pc, unsigned spos, bool
         if (((x >> 10) & 0x3f) > 5) return false;
         out = remap(e, x, F_ZR, F_ZR, F_NONE, F_NONE, false, &wrote);
     } else if ((x & 0x1F000000u) == 0x1B000000u) {         // data-processing 3 source
-        int rd = x & 31, rn = (x >> 5) & 31, rm = (x >> 16) & 31, ra = (x >> 10) & 31;
+        int rn = (x >> 5) & 31, rm = (x >> 16) & 31, ra = (x >> 10) & 31;
         int hn = rn == 31 ? 31 : hreg(e, rn);
         int hm = rm == 31 ? 31 : hreg(e, rm);
         int ha = ra == 31 ? 31 : hreg(e, ra);
-        int hd;
-        if (rd == 31) {
-            hd = 31;
-        } else if (e->pin[rd] >= 0 || e->host[rd] >= 0 ||
-                   rn == 31 || rm == 31 || ra == 31 ||
-                   e->pin[rn] >= 0 || e->pin[rm] >= 0 || e->pin[ra] >= 0 ||
-                   rn == rm || rn == ra || rm == ra ||
-                   e->npool < (n_pinned ? sizeof(lazy_pool) : sizeof(pool_nopin))) {
-            hd = hreg_dest(e, rd);
-        } else {
-            hd = -1;
-        }
         uint32_t fields = (31u << 0) | (31u << 5) | (31u << 10) | (31u << 16);
-        if (hd >= 0) {
-            out = (x & ~fields) | (uint32_t) hd | ((uint32_t) hn << 5) |
-                  ((uint32_t) ha << 10) | ((uint32_t) hm << 16);
-            put(e, out);
-            e->locked = 0;
-            if (rd != 31)
-                writeback(e, rd);
-        } else {
-            // Fallback for rare case where all 3 lazy pool slots are locked by distinct unpinned sources
-            out = (x & ~fields) | (uint32_t) T_A | ((uint32_t) hn << 5) |
-                  ((uint32_t) ha << 10) | ((uint32_t) hm << 16);
-            put(e, out);
-            e->locked = 0;
-            hd = hreg_dest(e, rd);
+        out = (x & ~fields) | (uint32_t) T_A | ((uint32_t) hn << 5) |
+              ((uint32_t) ha << 10) | ((uint32_t) hm << 16);
+        put(e, out);
+        e->locked = 0;
+        int rd = x & 31;
+        if (rd != 31) {
+            int hd = hreg(e, rd);
             put(e, 0xAA0003E0u | ((uint32_t) T_A << 16) | (uint32_t) hd);
             writeback(e, rd);
         }
@@ -2029,53 +2002,6 @@ static void emit_chain(struct em *e, struct fiber_block *b, unsigned long *slot,
     emit_chain_ex(e, b, slot, link, false);
 }
 
-// br / blr: look the target up in the per-thread block cache like the run
-// loop does (same hash, same staleness check) and dispatch straight into the
-// block on a hit; otherwise hand the guest PC back to the run loop.
-// xd = x2 + off
-static void emit_add_x2(struct em *e, int rd, size_t off) {
-    if (off < (1u << 24) && !(off & 0xfff)) {
-        put(e, 0x91400000u | (uint32_t) (off >> 12) << 10 | (2u << 5) | (uint32_t) rd);   // add xd, x2, #off>>12, lsl #12
-        return;
-    }
-    mov_imm64(e, rd, off);
-    put(e, 0x8B020000u | ((uint32_t) rd << 5) | (uint32_t) rd);                // add xd, xd, x2
-}
-
-// ret_cache[(ret >> 4) & 0xfff] = x9 (xbase = &ret_cache, xh = ret). PIC code
-// cannot bake the index: it depends on where the module is mapped.
-static void store_ret_cache(struct em *e, int h, uint64_t ret, int base) {
-    if (!pic_on) {
-        put(e, 0xF9000000u | ((uint32_t) ((ret >> 4) & 0xfff) << 10) | ((uint32_t) base << 5) | 9);  // str x9, [xbase, #idx*8]
-        return;
-    }
-    put(e, 0xD3443C00u | ((uint32_t) h << 5) | 11);                                  // ubfx x11, xh, #4, #12
-    put(e, 0xF82B7809u | ((uint32_t) base << 5));                                    // str x9, [xbase, x11, lsl #3]
-}
-
-// x9 = the block cached for guest address x10 (tlb->block_cache, as
-// fiber_ret's lookup keeps it); the three branches go to a miss.
-static void emit_block_cache_lookup(struct em *e, unsigned *miss1, unsigned *miss2, unsigned *miss3) {
-    // stale cache? tlb->block_cache_gen != mmu->asbestos->invalidate_gen
-    int mmu_off = (int) offsetof(struct tlb, mmu) - (int) offsetof(struct tlb, entries);
-    put(e, 0xF8400000u | ((uint32_t) (mmu_off & 0x1ff) << 12) | (2u << 5) | 12);  // ldur x12, [x2, #mmu]
-    put(e, 0xF9400000u | ((offsetof(struct mmu, asbestos) / 8) << 10) | (12u << 5) | 12);  // ldr x12, [x12, #asbestos]
-    put(e, 0xB9400000u | ((offsetof(struct asbestos, invalidate_gen) / 4) << 10) | (12u << 5) | 12);  // ldr w12, [x12, #gen]
-    emit_add_x2(e, 11, offsetof(struct tlb, block_cache_gen) - offsetof(struct tlb, entries));
-    put(e, 0xB9400000u | (11u << 5) | 11);                                       // ldr w11, [x11]
-    put(e, 0x6B0C017Fu);                                                         // cmp w11, w12
-    *miss1 = e->n; put(e, 0x54000001u);                                  // b.ne miss
-    // x9 = block_cache[(ip ^ (ip >> 12)) & 4095]
-    put(e, 0xCA4A314Bu);                                                         // eor x11, x10, x10, lsr #12
-    put(e, 0x92402D6Bu);                                                         // and x11, x11, #0xfff
-    emit_add_x2(e, 12, offsetof(struct tlb, block_cache) - offsetof(struct tlb, entries));
-    put(e, 0xF86B7989u);                                                         // ldr x9, [x12, x11, lsl #3]
-    *miss2 = e->n; put(e, 0xB4000009u);                                  // cbz x9, miss
-    put(e, 0xF9400000u | ((FIBER_BLOCK_addr / 8) << 10) | (9u << 5) | 12);       // ldr x12, [x9, #addr]
-    put(e, 0xEB0A019Fu);                                                         // cmp x12, x10
-    *miss3 = e->n; put(e, 0x54000001u);                                  // b.ne miss
-}
-
 // ret: same as the RET gadget, but with its own dispatch branch per site.
 static void emit_ret(struct em *e, struct fiber_block *b, int rn) {
     emit_flush_dirty(e);
@@ -2121,34 +2047,58 @@ static void emit_ret(struct em *e, struct fiber_block *b, int rn) {
     put(e, 0xF9400188u);                                                         // ldr x8, [x12]
     put(e, 0xF9000000u | ((LOCAL_last_block / 8) << 10) | (1u << 5) | 8);        // str x8, [x1, #last_block]
     emit_exit(e, (uintptr_t) jit_fiber_ret);
-
-    // ret_cache missed: query tlb->block_cache before exiting to the run loop
     patch_here(e, miss1);
     patch_here(e, miss2);
-    unsigned bmiss1, bmiss2, bmiss3;
-    emit_block_cache_lookup(e, &bmiss1, &bmiss2, &bmiss3);
-    if (!n_pinned)
-        put(e, 0xF9000000u | ((LOCAL_last_block / 8) << 10) | (1u << 5) | 9);    // str x9, [x1, #last_block]
-    if (n_pinned) {
-        put(e, 0xF9400000u | ((offsetof(struct fiber_block, native_entry) / 8) << 10) | (9u << 5) | 8);  // ldr x8, [x9, #native_entry]
-        unsigned slow = e->n; put(e, 0xB4000008u);                               // cbz x8, slow
-        if (pic_on) {
-            put(e, 0x91000000u | (FIBER_BLOCK_code << 10) | (9u << 5) | 9);      // add x9, x9, #code
-            enter_native(e);
-        } else {
-            put(e, 0xD61F0100u);                                                 // br x8
-        }
-        patch_here(e, slow);
-    }
-    put(e, 0x91000000u | (FIBER_BLOCK_code << 10) | (9u << 5) | 28);             // add x28, x9, #code
-    emit_native_dispatch_ex(e, true);
-
-    patch_here(e, bmiss1);
-    patch_here(e, bmiss2);
-    patch_here(e, bmiss3);
     if (miss0 != ~0u) patch_here(e, miss0);
     set_last_block(e, b);
     emit_exit(e, (uintptr_t) jit_fiber_ret);
+}
+
+// br / blr: look the target up in the per-thread block cache like the run
+// loop does (same hash, same staleness check) and dispatch straight into the
+// block on a hit; otherwise hand the guest PC back to the run loop.
+// xd = x2 + off
+static void emit_add_x2(struct em *e, int rd, size_t off) {
+    if (off < (1u << 24) && !(off & 0xfff)) {
+        put(e, 0x91400000u | (uint32_t) (off >> 12) << 10 | (2u << 5) | (uint32_t) rd);   // add xd, x2, #off>>12, lsl #12
+        return;
+    }
+    mov_imm64(e, rd, off);
+    put(e, 0x8B020000u | ((uint32_t) rd << 5) | (uint32_t) rd);                // add xd, xd, x2
+}
+
+// ret_cache[(ret >> 4) & 0xfff] = x9 (xbase = &ret_cache, xh = ret). PIC code
+// cannot bake the index: it depends on where the module is mapped.
+static void store_ret_cache(struct em *e, int h, uint64_t ret, int base) {
+    if (!pic_on) {
+        put(e, 0xF9000000u | ((uint32_t) ((ret >> 4) & 0xfff) << 10) | ((uint32_t) base << 5) | 9);  // str x9, [xbase, #idx*8]
+        return;
+    }
+    put(e, 0xD3443C00u | ((uint32_t) h << 5) | 11);                                  // ubfx x11, xh, #4, #12
+    put(e, 0xF82B7809u | ((uint32_t) base << 5));                                    // str x9, [xbase, x11, lsl #3]
+}
+
+// x9 = the block cached for guest address x10 (tlb->block_cache, as
+// fiber_ret's lookup keeps it); the three branches go to a miss.
+static void emit_block_cache_lookup(struct em *e, unsigned *miss1, unsigned *miss2, unsigned *miss3) {
+    // stale cache? tlb->block_cache_gen != mmu->asbestos->invalidate_gen
+    int mmu_off = (int) offsetof(struct tlb, mmu) - (int) offsetof(struct tlb, entries);
+    put(e, 0xF8400000u | ((uint32_t) (mmu_off & 0x1ff) << 12) | (2u << 5) | 12);  // ldur x12, [x2, #mmu]
+    put(e, 0xF9400000u | ((offsetof(struct mmu, asbestos) / 8) << 10) | (12u << 5) | 12);  // ldr x12, [x12, #asbestos]
+    put(e, 0xB9400000u | ((offsetof(struct asbestos, invalidate_gen) / 4) << 10) | (12u << 5) | 12);  // ldr w12, [x12, #gen]
+    emit_add_x2(e, 11, offsetof(struct tlb, block_cache_gen) - offsetof(struct tlb, entries));
+    put(e, 0xB9400000u | (11u << 5) | 11);                                       // ldr w11, [x11]
+    put(e, 0x6B0C017Fu);                                                         // cmp w11, w12
+    *miss1 = e->n; put(e, 0x54000001u);                                  // b.ne miss
+    // x9 = block_cache[(ip ^ (ip >> 12)) & 4095]
+    put(e, 0xCA4A314Bu);                                                         // eor x11, x10, x10, lsr #12
+    put(e, 0x92402D6Bu);                                                         // and x11, x11, #0xfff
+    emit_add_x2(e, 12, offsetof(struct tlb, block_cache) - offsetof(struct tlb, entries));
+    put(e, 0xF86B7989u);                                                         // ldr x9, [x12, x11, lsl #3]
+    *miss2 = e->n; put(e, 0xB4000009u);                                  // cbz x9, miss
+    put(e, 0xF9400000u | ((FIBER_BLOCK_addr / 8) << 10) | (9u << 5) | 12);       // ldr x12, [x9, #addr]
+    put(e, 0xEB0A019Fu);                                                         // cmp x12, x10
+    *miss3 = e->n; put(e, 0x54000001u);                                  // b.ne miss
 }
 
 // PIC, at a block end's `unchained` exit with the slot in x9: a slot
@@ -2833,7 +2783,7 @@ void ish_aot_register(const struct aot_module *m) {
 
 // Bump whenever the code emitted for some guest instruction, stub or exit
 // changes: images made before would still pass every other check.
-#define JIT_CODE_VERSION 16
+#define JIT_CODE_VERSION 15
 
 // Everything the emitted code bakes in besides the gadgets it names: the
 // conventions, the struct layouts it loads from and the TLB / block cache
