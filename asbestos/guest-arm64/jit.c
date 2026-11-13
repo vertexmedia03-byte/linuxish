@@ -286,9 +286,9 @@ static void jit_segment_installed(struct fiber_block *b, const struct jit_units 
 // into the lazy pool and spilled on eviction or before a side exit. x8-x12
 // are scratch, x28 = stream pointer at exits, x1 = cpu, x2 = tlb, x18 platform,
 // x29/x30/sp untouched.
-static const int8_t pin_guest[] = {0, G_SP, 1, 2, 19, 3, 4, 21, 20, 22, 23, 30, 29, 24, 6, 5, 26};
-static const int8_t pin_host[]  = {19, 20, 21, 22, 23, 24, 25, 26, 27, 3, 4, 5, 6, 7, 13, 14, 16};
-static const uint8_t lazy_pool[] = {17, 0};
+static const int8_t pin_guest[] = {0, G_SP, 1, 2, 19, 3, 4, 21, 20, 22, 23, 30, 29, 24, 6, 5};
+static const int8_t pin_host[]  = {19, 20, 21, 22, 23, 24, 25, 26, 27, 3, 4, 5, 6, 7, 13, 14};
+static const uint8_t lazy_pool[] = {16, 17, 0};
 #define H_CYC 15   // pinned mode: cpu->cycle lives in w15 between cold entry and exit
 static const uint8_t pool_nopin[] = {0, 3, 4, 5, 6, 7, 13, 14, 15, 16, 17, 19, 20, 21, 22, 23, 24, 25, 26, 27};
 static int n_pinned;               // 0 when pinning is off
