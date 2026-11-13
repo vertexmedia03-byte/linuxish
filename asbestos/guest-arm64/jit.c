@@ -791,9 +791,11 @@ static uint32_t remap(struct em *e, uint32_t x, int kd, int kn, int km, int ka, 
     return out;
 }
 
-// Inline TLB lookup for guest address in T_A (bytes = access size); leaves
-// the host address in T_A. Branches to the unit's stub on a miss or crossing.
-static void tlb_lookup(struct em *e, unsigned bytes, bool write, unsigned spos) {
+// Inline TLB lookup for guest address in T_A (bytes = access size). On a hit,
+// either adds the host bias to T_A or leaves the guest offset in T_A and bias
+// in T_Q for a register-offset memory instruction.
+static void tlb_lookup_impl(struct em *e, unsigned bytes, bool write, unsigned spos,
+                            bool add_host_bias) {
     // A translated host access may fault; keep guest state recoverable first.
     flush_dirty(e);
     e->hflags = false;   // the checks below use cmp
@@ -819,11 +821,26 @@ static void tlb_lookup(struct em *e, unsigned bytes, bool write, unsigned spos) 
     put(e, 0xCB000000u | (T_E << 16) | (T_P << 5) | T_I);      // sub x10, x8, x11
     put(e, 0xF100001Fu | ((0x1000 - bytes) << 10) | (T_I << 5));   // cmp x10, #(0x1000-bytes)
     branch_stub(e, spos, 2);                                   // b.hi stub
-    put(e, 0x8B000000u | (T_Q << 16) | (T_A << 5) | T_A);      // add x9, x12, x9
+    if (add_host_bias)
+        put(e, 0x8B000000u | (T_Q << 16) | (T_A << 5) | T_A);  // add x9, x12, x9
     if (cm_on && e->ntlb_ranges < sizeof(e->tlb_ranges) / sizeof(e->tlb_ranges[0])) {
         e->tlb_ranges[e->ntlb_ranges].start = profile_start;
         e->tlb_ranges[e->ntlb_ranges++].end = e->n;
     }
+}
+
+static void tlb_lookup(struct em *e, unsigned bytes, bool write, unsigned spos) {
+    tlb_lookup_impl(e, bytes, write, spos, true);
+}
+
+static void tlb_lookup_regoff(struct em *e, unsigned bytes, bool write, unsigned spos) {
+    tlb_lookup_impl(e, bytes, write, spos, false);
+}
+
+static uint32_t tlb_regoff_insn(uint32_t x, uint32_t base, int rt) {
+    // UXTX uses T_A as an unscaled guest address offset and T_Q as its host bias.
+    return (x & 0xC0C00000u) | base | ((uint32_t) T_A << 16) |
+        (3u << 13) | ((uint32_t) T_Q << 5) | (uint32_t) rt;
 }
 
 // Load/store translation. Returns false if the form is unsupported.
@@ -1143,9 +1160,9 @@ static bool emit_ldst_fp(struct em *e, uint32_t x, unsigned spos) {
     bool load = opc & 1;
     int gn = rn == 31 ? G_SP : rn;
     int hn = ldst_addr(e, gn, imm, wbmode == 1);
-    tlb_lookup(e, 1u << scale, !load, spos);
+    tlb_lookup_regoff(e, 1u << scale, !load, spos);
     if (!load) vload(e, V_N, rt);
-    put(e, (x & 0xC0C00000u) | 0x3D000000u | (T_A << 5) | V_N);              // ldr/str vN, [x9]
+    put(e, tlb_regoff_insn(x, 0x3C200800u, V_N));                            // ldr/str vN, [x12, x9]
     if (load) vstore(e, V_N, rt);   // the host load zeroed the rest of the register
     if (wbmode) ldst_wb(e, gn, hn, imm);
     return true;
@@ -1231,10 +1248,10 @@ static bool emit_ldst(struct em *e, uint32_t x, unsigned spos, bool *has_mem) {
     } else {
         put(e, 0xD1000000u | ((uint32_t) -imm << 10) | ((uint32_t) hn << 5) | T_A);
     }
-    tlb_lookup(e, 1u << size, !load, spos);
+    tlb_lookup_regoff(e, 1u << size, !load, spos);
     {
         int ht = rt == 31 ? 31 : load ? hreg_write(e, rt) : hreg(e, rt);
-        put(e, (x & 0xC0C00000u) | 0x39000000u | (T_A << 5) | (uint32_t) ht);   // host access: same size/opc, [x9]
+        put(e, tlb_regoff_insn(x, 0x38200800u, ht));                         // host access: [x12, x9]
         if (load && rt != 31)
             writeback(e, rt);
     }
