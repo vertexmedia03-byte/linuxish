@@ -69,7 +69,11 @@ void mmu_tlbs_stale(struct mmu *mmu) {
 void tlb_flush(struct tlb *tlb) {
     tlb->mem_changes = tlb->mmu->changes;
     for (unsigned i = 0; i < TLB_SIZE; i++)
-        tlb->entries[i] = (struct tlb_entry) {.page = TLB_PAGE_EMPTY, .page_if_writable = TLB_PAGE_EMPTY};
+        tlb->entries[i] = (struct tlb_entry) {
+            .page = TLB_PAGE_EMPTY,
+            .data_minus_addr = 0,
+            .page_if_writable = TLB_PAGE_EMPTY
+        };
 }
 
 void tlb_free(struct tlb *tlb) {

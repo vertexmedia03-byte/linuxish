@@ -18,6 +18,13 @@ _Static_assert(offsetof(struct tlb, invalidate_gen_ptr) < offsetof(struct tlb, e
         (offsetof(struct tlb, entries) - offsetof(struct tlb, invalidate_gen_ptr)) % 8 == 0 &&
         offsetof(struct tlb, entries) - offsetof(struct tlb, invalidate_gen_ptr) <= 512,
         "ARM64 JIT generation fields must fit an LDP offset");
+_Static_assert(offsetof(struct tlb_entry, data_minus_addr) ==
+        offsetof(struct tlb_entry, page) + sizeof(page_t) &&
+        offsetof(struct tlb_entry, page_if_writable) ==
+        offsetof(struct tlb_entry, data_minus_addr) + sizeof(uintptr_t) &&
+        sizeof(struct tlb_entry) == 32 &&
+        offsetof(struct tlb_entry, page_if_writable) % 8 == 0,
+        "ARM64 JIT TLB entry layout must support paired page and mapping loads");
 #endif
 
 void cpu() {

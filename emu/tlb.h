@@ -7,8 +7,15 @@
 
 struct tlb_entry {
     page_t page;
+#ifdef GUEST_ARM64
+    // Kept adjacent to page so the native JIT can load the tag and host bias
+    // together before checking the tag.
+    uintptr_t data_minus_addr;
+    page_t page_if_writable;
+#else
     page_t page_if_writable;
     uintptr_t data_minus_addr;
+#endif
 #ifdef GUEST_ARM64
     // Coherence generation: snapshot of mmu->changes when this entry was
     // populated. Used to detect a stale entry whose page was remapped

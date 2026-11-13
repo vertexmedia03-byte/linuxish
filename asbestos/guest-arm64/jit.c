@@ -802,21 +802,24 @@ static void tlb_lookup(struct em *e, unsigned bytes, bool write, unsigned spos) 
     put(e, 0xD3400000u | (12u << 16) | (24u << 10) | (T_I << 5) | T_I); // ubfx x10, x10, #12, #13
     put(e, 0x9240BC00u | (T_A << 5) | T_A);                    // and x9, x9, #0xffffffffffff
     put(e, 0x8B000000u | (T_I << 16) | (5u << 10) | (2u << 5) | T_I);    // add x10, x2, x10, lsl #5
-    unsigned pg = write ? offsetof(struct tlb_entry, page_if_writable) : offsetof(struct tlb_entry, page);
-    put(e, 0xF9400000u | ((pg / 8) << 10) | (T_I << 5) | T_E); // ldr x11, [x10, #page]
+    unsigned pair_off = write ? offsetof(struct tlb_entry, data_minus_addr) :
+                                offsetof(struct tlb_entry, page);
+    unsigned reg_first = write ? T_Q : T_E;
+    unsigned reg_second = write ? T_E : T_Q;
+    put(e, 0xA9400000u | ((pair_off / 8) << 15) | (reg_second << 10) |
+          (T_I << 5) | reg_first);                           // ldp page and data_minus_addr
     // One check for "this page" and "does not cross it": x9 - page <=
     // 0x1000 - bytes. An empty entry's page (TLB_PAGE_EMPTY) is above every
     // 48-bit address, so it never passes.
     // tlb->stale (TLB_STALE once another thread changed the mappings) ORed
     // into the address: a stale TLB fails this check for every page.
     int stale_off = (int) offsetof(struct tlb, stale) - (int) offsetof(struct tlb, entries);
-    put(e, 0xF8400000u | ((uint32_t) (stale_off & 0x1ff) << 12) | (2u << 5) | T_Q);   // ldur x12, [x2, #stale]
-    put(e, 0xAA000000u | (T_Q << 16) | (T_A << 5) | T_Q);      // orr x12, x9, x12
-    put(e, 0xCB000000u | (T_E << 16) | (T_Q << 5) | T_P);      // sub x8, x12, x11
-    put(e, 0xF100001Fu | ((0x1000 - bytes) << 10) | (T_P << 5));   // cmp x8, #(0x1000-bytes)
+    put(e, 0xF8400000u | ((uint32_t) (stale_off & 0x1ff) << 12) | (2u << 5) | T_P);   // ldur x8, [x2, #stale]
+    put(e, 0xAA000000u | (T_P << 16) | (T_A << 5) | T_P);      // orr x8, x9, x8
+    put(e, 0xCB000000u | (T_E << 16) | (T_P << 5) | T_I);      // sub x10, x8, x11
+    put(e, 0xF100001Fu | ((0x1000 - bytes) << 10) | (T_I << 5));   // cmp x10, #(0x1000-bytes)
     branch_stub(e, spos, 2);                                   // b.hi stub
-    put(e, 0xF9400000u | ((offsetof(struct tlb_entry, data_minus_addr) / 8) << 10) | (T_I << 5) | T_E);  // ldr x11, [x10, #dma]
-    put(e, 0x8B000000u | (T_A << 16) | (T_E << 5) | T_A);      // add x9, x11, x9
+    put(e, 0x8B000000u | (T_Q << 16) | (T_A << 5) | T_A);      // add x9, x12, x9
     if (cm_on && e->ntlb_ranges < sizeof(e->tlb_ranges) / sizeof(e->tlb_ranges[0])) {
         e->tlb_ranges[e->ntlb_ranges].start = profile_start;
         e->tlb_ranges[e->ntlb_ranges++].end = e->n;
