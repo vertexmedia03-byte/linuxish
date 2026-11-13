@@ -418,9 +418,10 @@ static void flush_dirty(struct em *e) {
     e->dirty = 0;
 }
 
-// host register holding guest register g (0..30 or G_SP), loading it on first
-// use. When the pool is full, an unused mapping can be spilled and dropped.
-static int hreg(struct em *e, int g) {
+// host register holding guest register g (0..30 or G_SP). Read uses load it
+// on first use; write-only destinations can claim a register without a reload.
+// When the pool is full, an unused mapping can be spilled and dropped.
+static int hreg_impl(struct em *e, int g, bool read) {
     if (e->uses[g] < 0xffff) e->uses[g]++;
     if (e->pin[g] >= 0)
         return e->pin[g];
@@ -455,9 +456,13 @@ static int hreg(struct em *e, int g) {
     e->host[g] = (int8_t) h;
     e->owner[h] = (int8_t) g;
     e->locked |= 1u << h;
-    put(e, 0xF9400000u | ((greg_off(g) / 8) << 10) | (1u << 5) | (uint32_t) h);  // ldr xh, [x1, #off]
+    if (read)
+        put(e, 0xF9400000u | ((greg_off(g) / 8) << 10) | (1u << 5) | (uint32_t) h);  // ldr xh, [x1, #off]
     return h;
 }
+
+static int hreg(struct em *e, int g) { return hreg_impl(e, g, true); }
+static int hreg_write(struct em *e, int g) { return hreg_impl(e, g, false); }
 
 static void writeback(struct em *e, int g) {
     if (e->pin[g] >= 0)
@@ -778,9 +783,7 @@ static uint32_t remap(struct em *e, uint32_t x, int kd, int kn, int km, int ka, 
         } else {
             g = r;
         }
-        if (f != 0 || rd_read)
-            (void) hreg(e, g);
-        int h = hreg(e, g);
+        int h = f == 0 && !rd_read ? hreg_write(e, g) : hreg(e, g);
         out = (out & ~(31u << shift[f])) | ((uint32_t) h << shift[f]);
         if (f == 0)
             *wrote = g;
@@ -1165,7 +1168,8 @@ static bool emit_ldst(struct em *e, uint32_t x, unsigned spos, bool *has_mem) {
         else if (imm >= 0) put(e, 0x91000000u | ((uint32_t) imm << 10) | ((uint32_t) hn << 5) | T_A);
         else put(e, 0xD1000000u | ((uint32_t) -imm << 10) | ((uint32_t) hn << 5) | T_A);
         tlb_lookup(e, 2u << scale, !L, spos);
-        int ht = rt == 31 ? 31 : hreg(e, rt), ht2 = rt2 == 31 ? 31 : hreg(e, rt2);
+        int ht = rt == 31 ? 31 : L ? hreg_write(e, rt) : hreg(e, rt);
+        int ht2 = rt2 == 31 ? 31 : L ? hreg_write(e, rt2) : hreg(e, rt2);
         // host pair access, signed-offset form, offset 0
         put(e, (x & 0xC0400000u) | 0x29000000u | ((uint32_t) ht2 << 10) | (T_A << 5) | (uint32_t) ht);
         if (L) {
@@ -1226,7 +1230,7 @@ static bool emit_ldst(struct em *e, uint32_t x, unsigned spos, bool *has_mem) {
     }
     tlb_lookup(e, 1u << size, !load, spos);
     {
-        int ht = rt == 31 ? 31 : hreg(e, rt);
+        int ht = rt == 31 ? 31 : load ? hreg_write(e, rt) : hreg(e, rt);
         put(e, (x & 0xC0C00000u) | 0x39000000u | (T_A << 5) | (uint32_t) ht);   // host access: same size/opc, [x9]
         if (load && rt != 31)
             writeback(e, rt);
