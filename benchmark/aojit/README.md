@@ -280,8 +280,9 @@ ISH_JIT_PIC=1 build-arm64-jit/ish -r $R /bin/cat /proc/ish/jit | grep -o 'abi [0
 
 The abi also covers the runtime conventions (PIC, pinned registers). Recordings run with
 `ISH_JIT_PIC=1`, and a build with images linked turns PIC on by itself. Without the variable a plain
-JIT build shows another abi (`2c9b3f6a` instead of `daf8fcc7` for this set). That abi is not the one
-of the images.
+JIT build shows another abi (`2c9b3f6a` instead of `daf8fcc7` for this set). Profile builds now
+default to PIC even without images so they exercise the PIC link path; set `ISH_JIT_PIC=0` to
+profile the non-PIC path. The non-PIC abi is not the one of the images.
 
 ### 2. Rootfs with the packages and the suite
 

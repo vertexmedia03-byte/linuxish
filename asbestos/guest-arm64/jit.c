@@ -4323,9 +4323,18 @@ static void jit_init(void) {
     simd_on = !env_off("ISH_JIT_SIMD");
     pin_on = !env_off("ISH_JIT_PIN");
     dirty_on = !env_off("ISH_JIT_DIRTY");
-    // AOT images are PIC code, so PIC is the default once one is linked in.
+    // AOT images require PIC. Profile builds also default to PIC so diagnostic
+    // runs exercise the same branch-only link path, even without AOT images.
     const char *pic = getenv("ISH_JIT_PIC");
-    pic_on = pic ? pic[0] == '1' : have_images;
+    if (pic) {
+        pic_on = pic[0] == '1';
+    } else {
+#ifdef ISH_PROFILE
+        pic_on = true;
+#else
+        pic_on = have_images;
+#endif
+    }
     if (!have_region)
         pic_on = true;
     pin_init(pin_on);

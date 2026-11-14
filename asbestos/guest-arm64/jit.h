@@ -29,7 +29,9 @@
 //
 // ISH_JIT_PIC=1 emits position-independent code (jit.c, "PIC"): nothing in it
 // depends on where the guest module or its blocks live, and a registry reuses
-// a translation for every block with the same key, across processes.
+// a translation for every block with the same key, across processes. Profile
+// builds default to PIC without AOT images to exercise this path; the variable
+// can still explicitly select either mode.
 //
 // AOT: in PIC mode ISH_JIT_RECORD=<file> writes the translations of one module
 // (ISH_JIT_RECORD_MOD, default ld-musl) at exit, and tools/jit_aot turns them
