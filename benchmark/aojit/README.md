@@ -220,7 +220,9 @@ Run it separately if Python function-level statistics are needed.
 and JIT decode/translation. The translated host-PC samples are also grouped by emitted-code category
 (iSH TLB checks, guest-register spills/reloads, guest-op lowering, and JIT scaffold) to expose iSH
 work added around guest instructions. These are sampled shares of translated execution, not exact
-per-category timings. Guest-engine time excluding measured gadget time is an estimate and still
+per-category timings. JIT scaffold is the catch-all for generated code outside the guest-op and TLB
+ranges; its hottest host PCs are listed separately to distinguish entry/exit paths from alignment
+padding. Guest-engine time excluding measured gadget time is an estimate and still
 includes transitions. It also samples thread CPU time around one in 256 `fiber_enter()` calls, which
 excludes time descheduled but includes translated guest code, gadgets, and runtime work; this is not
 a JIT-only measurement. The hottest guest ranges are shown in 256-byte buckets and, when they map to

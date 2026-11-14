@@ -630,6 +630,12 @@ size_t ish_profile_describe(char *buf, size_t size) {
         uintptr_t pc;
         uint64_t samples;
     } top_host_pc[ISH_PROFILE_HOST_PC_CLASSES][ISH_PROFILE_SYSCALL_TOP] = {};
+#ifdef ISH_JIT
+    struct {
+        uintptr_t pc;
+        uint64_t samples;
+    } top_scaffold_pc[ISH_PROFILE_SYSCALL_TOP] = {};
+#endif
     struct {
         uint64_t pc_bucket;
         uint64_t lr_bucket;
@@ -701,6 +707,19 @@ size_t ish_profile_describe(char *buf, size_t size) {
                                         &guest_insn, &host_insn))
                     kind = profile_jit_classify(in_tlb, in_guest_op, host_insn);
                 translated_kind_samples[kind] += samples;
+                if (kind == PROFILE_JIT_SCAFFOLD) {
+                    unsigned scaffold_pos = ISH_PROFILE_SYSCALL_TOP;
+                    while (scaffold_pos > 0 &&
+                           samples > top_scaffold_pc[scaffold_pos - 1].samples)
+                        scaffold_pos--;
+                    if (scaffold_pos < ISH_PROFILE_SYSCALL_TOP) {
+                        for (unsigned j = ISH_PROFILE_SYSCALL_TOP - 1;
+                             j > scaffold_pos; j--)
+                            top_scaffold_pc[j] = top_scaffold_pc[j - 1];
+                        top_scaffold_pc[scaffold_pos].pc = sample_pc;
+                        top_scaffold_pc[scaffold_pos].samples = samples;
+                    }
+                }
             }
 #endif
             unsigned pos = ISH_PROFILE_SYSCALL_TOP;
@@ -812,6 +831,20 @@ size_t ish_profile_describe(char *buf, size_t size) {
                                   (double) samples * 100.0 /
                                       (double) classified_translated_samples,
                                   (unsigned long long) samples);
+        }
+    }
+#endif
+#ifdef ISH_JIT
+    if (top_scaffold_pc[0].samples != 0) {
+        used = profile_append(buf, size, used,
+                              "  hottest JIT scaffold host PCs "
+                              "(4-byte buckets, representative sample PC):\n");
+        for (unsigned i = 0; i < ISH_PROFILE_SYSCALL_TOP &&
+                                top_scaffold_pc[i].samples != 0; i++) {
+            char pc_label[192];
+            profile_host_pc_label(pc_label, sizeof(pc_label), top_scaffold_pc[i].pc);
+            used = profile_append(buf, size, used, "    %s: %llu\n", pc_label,
+                                  (unsigned long long) top_scaffold_pc[i].samples);
         }
     }
 #endif
