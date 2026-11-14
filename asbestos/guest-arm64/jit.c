@@ -271,6 +271,10 @@ static inline bool fits(int64_t v, int bits) { return v >= -(1LL << (bits - 1)) 
 #define ENC_B(off) (0x14000000u | ((uint32_t) ((off) >> 2) & 0x3ffffff))
 #define NOP 0xD503201Fu
 
+static inline int64_t branch_disp(uint32_t insn) {
+    return sext(insn & 0x03ffffffu, 26) * 4;
+}
+
 struct em;
 static void jit_segment_installed(struct fiber_block *b, const struct jit_units *U, unsigned first,
                                   unsigned end, const uint8_t *code, unsigned words, const struct em *e);
@@ -558,7 +562,6 @@ static void mov_host_ptr(struct em *e, int rd, const void *p) {
 // the exit-stub branch.
 
 #define FP 29
-#define LINK_UNSET 1u   // literal of an unlinked direct link
 static unsigned code_off(unsigned k) { return FIBER_BLOCK_code + 8 * k; }
 
 // Per translation: what its code loads on the way (above x29, small offsets
@@ -1611,16 +1614,16 @@ static uint8_t *finish_native(struct em *e, struct fiber_block *b, uintptr_t ori
 
 
 
-// *site: expected -> v, atomically; false if it held something else.
-static bool claim_u64(uint64_t *site, uint64_t expected, uint64_t v) {
-    if (__atomic_load_n(site, __ATOMIC_ACQUIRE) != expected)
-        return false;
+// Atomically claim a direct-link branch and invalidate its instruction cache.
+static bool claim_branch(uint32_t *site, uint32_t expected, uint32_t insn) {
 #if TARGET_OS_OSX
     bool was_writable = jit_writable;
 #endif
     jit_write_begin();
-    bool ok = __atomic_compare_exchange_n((uint64_t *) ((uint8_t *) site + rw_delta), &expected, v, false,
+    bool ok = __atomic_compare_exchange_n((uint32_t *) ((uint8_t *) site + rw_delta), &expected, insn, false,
                                           __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+    if (ok)
+        sys_icache_invalidate(site, 4);
 #if TARGET_OS_OSX
     if (!was_writable)
         jit_exec_ready();
@@ -1640,31 +1643,34 @@ static uintptr_t link_target(struct fiber_block *from, struct fiber_block *to) {
 }
 
 // PIC code is shared: every block with the same translation (in this and
-// other address spaces) has the same direct-link site. So deciding a chain
-// and claiming the site are one step: a successor may be chained only once
-// the site's literal names its code, since any block that claims the site
-// later would take the branch in every chain made while it was unlinked.
+// other address spaces) has the same direct-link site. Claiming the branch
+// ensures a successor may chain only to the target every copy will enter.
 bool jit_chain_ok(struct fiber_block *from, int i, struct fiber_block *to) {
     if (!pic_on || !from->native_link[i])
         return true;
     uint32_t *site = from->native_link[i];
     bool writable = (uintptr_t) site >= (uintptr_t) region && (uintptr_t) site < (uintptr_t) region + REGION_SIZE;
-    uint64_t lit = __atomic_load_n((uint64_t *) (site + 1), __ATOMIC_ACQUIRE);
-    if (lit == LINK_UNSET && (!writable || link_off))
-        return true;   // never linked (read-only AOT code, or links off): the branch falls through
+    uint32_t branch = __atomic_load_n(site, __ATOMIC_ACQUIRE);
+    if ((branch & 0xfc000000u) != 0x14000000u)
+        return false;
+    int64_t old_disp = branch_disp(branch);
+    // +4 is the unlinked form emitted now; +12 is the legacy inline-literal
+    // form retained by existing AOT images.
+    if ((old_disp == 4 || old_disp == 12) && (!writable || link_off))
+        return true;
     uintptr_t target = link_target(from, to);
     if (!target)
         return false;
     int64_t d = (int64_t) target - (int64_t) (uintptr_t) site;
-    if (lit == LINK_UNSET) {
-        if (fits(d >> 2, 26) && claim_u64((uint64_t *) (site + 1), LINK_UNSET, (uint64_t) d)) {
-            patch_insn(site, ENC_B(d));
+    if (old_disp == 4 || old_disp == 12) {
+        if (fits(d >> 2, 26) && claim_branch(site, branch, ENC_B(d))) {
             atomic_fetch_add_explicit(&st_links, 1, memory_order_relaxed);
             return true;
         }
-        lit = __atomic_load_n((uint64_t *) (site + 1), __ATOMIC_ACQUIRE);
+        branch = __atomic_load_n(site, __ATOMIC_ACQUIRE);
     }
-    return lit == (uint64_t) d;
+    return (branch & 0xfc000000u) == 0x14000000u &&
+           (uintptr_t) ((intptr_t) site + branch_disp(branch)) == target;
 }
 
 bool jit_chain_refused(struct fiber_block *from, int i, struct fiber_block *to) {
@@ -1896,11 +1902,10 @@ static void emit_chain_outlined(struct em *e, struct fiber_block *b, unsigned lo
         put(e, 0x720025FFu);                                           // tst w15, #0x3ff
         to_poke = e->n; put(e, 0x54000000u);                           // b.eq poke
     }
-    if (!(e->n & 1))
-        put(e, NOP);   // keep the literal 8-byte aligned (segments start 16-aligned)
     unsigned site = e->n; put(e, 0x14000000u);                         // b <link entry> (patched)
     if (link >= 0 && link < 2) e->link_at[link] = (int) site;
-    put(e, LINK_UNSET); put(e, 0);                                     // literal: target - branch
+    // The unlinked branch skips itself. jit_chain_ok() atomically replaces
+    // it with a direct branch when this translation can claim the link.
     patch_here(e, site);
     emit_to_stub(e, STUB_GENERIC);
     if (to_poke != ~0u) {
@@ -1958,17 +1963,13 @@ static void emit_chain_ex(struct em *e, struct fiber_block *b, unsigned long *sl
     ldr_block(e, 9, slot_off);
     unsigned to_unch = e->n; put(e, 0xB7F80009u);                 // tbnz x9, #63, unchained
     if (pic_on && reg_cycle) {
-        // Direct link: jit_link() turns this branch into `b <successor's hot
-        // entry>` (an AOT image has it from the start) and records the target,
-        // relative to the branch, in the literal after it. jit_chain_ok() only
+        // Direct link: jit_chain_ok() turns this branch into `b <successor's hot
+        // entry>` (an AOT image has it from the start). jit_chain_ok() only
         // lets the slot chain to a block entered there, so the branch needs no
         // check of its own; a successor it refuses marks the slot instead
         // (jit_chain_refused(), handled at `unchained` below).
-        if (!(e->n & 1))
-            put(e, NOP);   // keep the literal 8-byte aligned (segments start 16-aligned)
         unsigned site = e->n; put(e, 0x14000000u);                               // b <link entry> (patched)
         if (link >= 0 && link < 2) e->link_at[link] = (int) site;
-        put(e, LINK_UNSET); put(e, 0);                                           // literal: target - branch
         patch_here(e, site);                                                     // unlinked: fall to the next line
         generic = e->n;
         // Not linked yet: the successor's native code, if it has some.
@@ -2830,8 +2831,8 @@ void ish_aot_register(const struct aot_module *m) {
         aot_registered[aot_nregistered++] = m;
 }
 
-// Bump whenever the code emitted for some guest instruction, stub or exit
-// changes: images made before would still pass every other check.
+// Bump when emitted code changes unless the runtime remains compatible with
+// the older image encoding.
 #define JIT_CODE_VERSION 18
 
 // Everything the emitted code bakes in besides the gadgets it names: the
@@ -3999,7 +4000,8 @@ static void rec_write(const char *path) {
         qsort(w, nw, sizeof(*w), rec_where_cmp);
     // The conventions the code was generated with.
     // region_full: the code region filled up, so the recording misses what ran after that.
-    fprintf(f, "{\"header\": {\"abi\": %u, \"prologue_words\": %d, \"entry_off\": %lu, \"n_pinned\": %d, "
+    fprintf(f, "{\"header\": {\"abi\": %u, \"link_format\": \"direct-branch-v1\", "
+            "\"prologue_words\": %d, \"entry_off\": %lu, \"n_pinned\": %d, "
             "\"region_full\": %s, \"region_used\": %zu, \"exit_stub\": [",
             jit_abi(), prologue_words, (unsigned long) entry_off(), n_pinned, region_full ? "true" : "false",
             region_full ? (size_t) REGION_SIZE : (size_t) region_used);
@@ -4049,10 +4051,11 @@ static void rec_write(const char *path) {
             for (int slot = 0, first = 1; slot < 2; slot++) {
                 if (rs->link_at[slot] < 0) continue;
                 uint32_t *site = (uint32_t *) (r->seg[i].code + 4 * (unsigned) rs->link_at[slot]);
-                uint64_t lit = __atomic_load_n((uint64_t *) (site + 1), __ATOMIC_ACQUIRE);
+                uint32_t branch = __atomic_load_n(site, __ATOMIC_ACQUIRE);
+                int64_t disp = (branch & 0xfc000000u) == 0x14000000u ? branch_disp(branch) : 0;
                 long tt = -1, ts = 0, tw = 0;
-                if (lit != LINK_UNSET) {
-                    uintptr_t target = (uintptr_t) site + lit;
+                if (disp && disp != 4 && disp != 12) {
+                    uintptr_t target = (uintptr_t) ((intptr_t) site + disp);
                     size_t lo = 0, hi = nw;
                     while (lo < hi) {
                         size_t mid = (lo + hi) / 2;

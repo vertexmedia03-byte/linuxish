@@ -8,8 +8,7 @@ lays them out as assembly that links into ish:
 - code in __TEXT,__ish_aot: each host symbol (movz + 3 movk in the recording)
   becomes adrp/add + 2 nops, each branch to one of the JIT's shared stubs (the
   exit stub, the block-end slow paths) a branch to the image's own copy of it,
-  and each direct link the JIT had made a static branch
-  whose literal holds the assemble-time offset target - branch;
+  and each direct link the JIT had made a static branch;
 - tables in __DATA,__const, described by `struct aot_module` (asbestos/guest-
   arm64/aot.h): module identity (path, size, sha256), translations sorted by
   file offset with their validation key, gadget per unit, segments, links and
@@ -43,7 +42,7 @@ PRE_COMPACT_ABIS = {0xdaf8fcc7}
 NO_LINKS = False     # --no-links: every block end takes the generic path (successor native or not)
 KEY_HDR = 7          # key words before the units: mod, off lo/hi, page offset, units, 2 slots
 KEY_UNIT = 9         # words per unit; words 7 and 8 of a unit are its gadget pointer
-LINK_UNSET = 1
+LINK_UNSET = 1  # legacy inline-literal images
 
 
 def load_recording(path):
@@ -87,7 +86,7 @@ def seg_label(t, s):
     return f'Lt{t}s{s}'
 
 
-def emit_segment(out, syms, t, s, seg, stats, label=None):
+def emit_segment(out, syms, t, s, seg, stats, label=None, direct_branch_links=False):
     words = seg['words']
     special = {}
     for rel in seg['rel']:
@@ -130,6 +129,17 @@ def emit_segment(out, syms, t, s, seg, stats, label=None):
             continue
         _, slot, tt, ts, tw = sp
         site = f'{seg_label(t, s)}_l{slot}'
+        if direct_branch_links:
+            out.append(f'{site}:')
+            if tt >= 0 and (tt, ts) in stats['labels'] and not NO_LINKS:
+                dest = f'{seg_label(tt, ts)} + {4 * tw}'
+                out.append(f'    b {dest}')
+                stats['linked'] += 1
+            else:
+                out.append(f'    .inst 0x{words[i]:08x}')  # unlinked branch falls through
+                stats['unlinked'] += 1
+            i += 1
+            continue
         if tt >= 0 and (tt, ts) in stats['labels'] and not NO_LINKS:
             dest = f'{seg_label(tt, ts)} + {4 * tw}'
             out.append(f'{site}:')
@@ -251,6 +261,7 @@ def main():
     NO_LINKS = args.no_links
 
     header, trans = load_recording(args.recording)
+    direct_branch_links = header.get('link_format') == 'direct-branch-v1'
     abi = header.get('abi') or (int(args.abi, 16) if args.abi else None)
     if not abi:
         sys.exit(f"❌ {args.recording}: no abi in the header; re-record, or pass --abi of the ish that made it")
@@ -292,7 +303,8 @@ def main():
     code, keep = [], []
     for ti, t in enumerate(tqdm(trans, desc='🛠  code', unit='tr')):
         body = []
-        ok = all(emit_segment(body, syms, ti, si, seg, stats) for si, seg in enumerate(t['segs']))
+        ok = all(emit_segment(body, syms, ti, si, seg, stats, direct_branch_links=direct_branch_links)
+                 for si, seg in enumerate(t['segs']))
         if not ok:
             stats['dropped'] += 1
             continue

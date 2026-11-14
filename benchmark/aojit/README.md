@@ -79,6 +79,11 @@ before it (abi `daf8fcc7`, the 64-bit layout) are rewritten with `tools/jit_aot/
 made the linked app 9% smaller (tables 77.1 -> 53.4 MB, rebases 2.43M -> 7.3K); the IPA stays about
 the same size, since the relative offsets compress less well than the absolute pointers did.
 
+PIC direct links are encoded in the branch instruction rather than an inline 64-bit target literal.
+This removes the literal-alignment NOP from newly recorded translations. The runtime still recognizes
+the old branch-plus-literal form, so existing AOT images remain usable; new recordings identify the
+branch-only form in their header for `gen.py`.
+
 - `daf8fcc7/`: the 64-bit layout, for feat/aot-family-match up to `0e59def6` (build 822/823). Its
   `rec/` recordings cannot go through the current gen.py (their recorder is gone and gen.py refuses
   that abi); convert the `.S` with compact.py instead.
