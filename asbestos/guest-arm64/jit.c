@@ -3796,8 +3796,42 @@ void jit_module_path(int mod, char *buf, size_t size) {
     pthread_mutex_unlock(&cm_lock);
 }
 
+#ifdef ISH_PROFILE
+static bool jit_host_cpu_state_access(uint32_t insn, bool *is_load) {
+    if (((insn >> 5) & 31) != 1)
+        return false;
+    uint32_t op = insn & 0xFFC00000u;
+    uint64_t offset;
+    bool load;
+    if (op == 0xF9000000u || op == 0xF9400000u) {
+        offset = ((insn >> 10) & 0xFFFu) * 8u;
+        load = op == 0xF9400000u;
+        size_t regs_start = offsetof(struct cpu_state, regs);
+        size_t regs_end = regs_start + sizeof(((struct cpu_state *) 0)->regs);
+        if (!((offset >= regs_start && offset < regs_end &&
+               (offset - regs_start) % sizeof(uint64_t) == 0) ||
+              offset == offsetof(struct cpu_state, sp)))
+            return false;
+    } else if (op == 0x3D800000u || op == 0x3DC00000u) {
+        offset = ((insn >> 10) & 0xFFFu) * 16u;
+        load = op == 0x3DC00000u;
+        size_t fp_start = offsetof(struct cpu_state, fp);
+        size_t fp_end = fp_start + sizeof(((struct cpu_state *) 0)->fp);
+        if (offset < fp_start || offset >= fp_end ||
+            (offset - fp_start) % sizeof(union arm64_vreg) != 0)
+            return false;
+    } else {
+        return false;
+    }
+    if (is_load)
+        *is_load = load;
+    return true;
+}
+#endif
+
 bool jit_host_pc_segment(uintptr_t pc, int *module, uint64_t *off, uint64_t *guest_pc,
                          unsigned *units, bool *in_tlb, bool *in_guest_op,
+                         bool *is_guest_spill, bool *is_guest_reload,
                          uint32_t *guest_insn, uint32_t *host_insn) {
     bool found = false;
     pthread_mutex_lock(&cm_lock);
@@ -3811,6 +3845,8 @@ bool jit_host_pc_segment(uintptr_t pc, int *module, uint64_t *off, uint64_t *gue
         if (guest_pc) *guest_pc = seg->pc;
         if (units) *units = seg->units;
         if (in_guest_op) *in_guest_op = false;
+        if (is_guest_spill) *is_guest_spill = false;
+        if (is_guest_reload) *is_guest_reload = false;
         if (guest_insn) *guest_insn = 0;
         if (host_insn) *host_insn = 0;
         if (in_tlb) {
@@ -3836,9 +3872,23 @@ bool jit_host_pc_segment(uintptr_t pc, int *module, uint64_t *off, uint64_t *gue
             break;
         }
 #endif
-        if (host_insn && pc % 4 == 0 &&
-            pc - start + 4 <= 4 * (uint64_t) seg->words)
-            *host_insn = __atomic_load_n((const uint32_t *) pc, __ATOMIC_RELAXED);
+        if (pc % 4 == 0 && pc - start + 4 <= 4 * (uint64_t) seg->words) {
+            uint32_t instruction =
+                __atomic_load_n((const uint32_t *) pc, __ATOMIC_RELAXED);
+            if (host_insn)
+                *host_insn = instruction;
+#ifdef ISH_PROFILE
+            bool is_load = false;
+            if (in_guest_op && *in_guest_op &&
+                jit_host_cpu_state_access(instruction, &is_load)) {
+                if (is_load) {
+                    if (is_guest_reload) *is_guest_reload = true;
+                } else if (is_guest_spill) {
+                    *is_guest_spill = true;
+                }
+            }
+#endif
+        }
         found = true;
         break;
     }

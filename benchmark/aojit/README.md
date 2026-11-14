@@ -217,12 +217,20 @@ Avoid running `cProfile` in this measurement: call-intensive workloads can slow 
 Run it separately if Python function-level statistics are needed.
 
 `/proc/ish/profile` reports guest execution, gadget transfers, C-side TLB misses, dispatch, syscalls,
-and JIT decode/translation. The translated host-PC samples are also grouped by emitted-code category
-(iSH TLB checks, guest-register spills/reloads, guest-op lowering, and JIT scaffold) to expose iSH
-work added around guest instructions. These are sampled shares of translated execution, not exact
-per-category timings. JIT scaffold is the catch-all for generated code outside the guest-op and TLB
-ranges; its hottest host PCs are listed separately to distinguish entry/exit paths from alignment
-padding. Guest-engine time excluding measured gadget time is an estimate and still
+and JIT decode/translation. The translated host-PC samples are grouped by emitted-code category
+(inline iSH TLB checks, guest-register spills/reloads, guest-op lowering, JIT scaffold, and samples
+that could not be mapped back to JIT metadata). Spill/reload classification checks the AArch64
+access type, `cpu_state` base register, and register-array/stack/vector offsets rather than treating
+all accesses through the CPU-state pointer as spills. The report also gives broad AArch64 host
+instruction classes for guest-op ranges and scaffold, the hottest exact guest-instruction sites,
+and scaffold hotspots grouped by their owning translated segment. It reports metadata coverage and
+PC-table drops so missing samples are visible. These are sampled shares/counts, not exact
+per-category timings or instruction execution counts. Guest-instruction-site counts include all
+samples within that instruction's generated range (including inline TLB checks and guest-state
+accesses); they are a separate attribution view and must not be added to the category totals. JIT
+scaffold is the catch-all for generated code outside the guest-op and TLB ranges; it
+includes entry/exit, links, and alignment, and its hottest host PCs remain listed separately.
+Guest-engine time excluding measured gadget time is an estimate and still
 includes transitions. It also samples thread CPU time around one in 256 `fiber_enter()` calls, which
 excludes time descheduled but includes translated guest code, gadgets, and runtime work; this is not
 a JIT-only measurement. The hottest guest ranges are shown in 256-byte buckets and, when they map to

@@ -9,6 +9,7 @@
 #include <stdarg.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #if defined(__APPLE__)
@@ -66,6 +67,7 @@ static struct {
     _Atomic uintptr_t sample_pc;
     _Atomic uint64_t samples;
 } prof_host_pc[ISH_PROFILE_HOST_PC_CLASSES][ISH_PROFILE_HOST_PC_BUCKETS];
+static _Atomic uint64_t prof_host_pc_dropped_by_class[ISH_PROFILE_HOST_PC_CLASSES];
 static struct {
     _Atomic uint64_t state;
     _Atomic uint64_t pc_bucket;
@@ -273,6 +275,7 @@ void ish_profile_reset(void) {
     }
     for (unsigned c = 0; c < ISH_PROFILE_HOST_PC_CLASSES; c++) {
         atomic_store_explicit(&prof_host_pc_samples[c], 0, memory_order_relaxed);
+        atomic_store_explicit(&prof_host_pc_dropped_by_class[c], 0, memory_order_relaxed);
         for (unsigned i = 0; i < ISH_PROFILE_HOST_PC_BUCKETS; i++) {
             atomic_store_explicit(&prof_host_pc[c][i].pc_bucket, 0, memory_order_relaxed);
             atomic_store_explicit(&prof_host_pc[c][i].sample_pc, 0, memory_order_relaxed);
@@ -314,6 +317,8 @@ void ish_profile_record_host_pc(uintptr_t pc, uintptr_t lr, bool translated,
     uint64_t bucket = (uint64_t) pc & ~((UINT64_C(1) << ISH_PROFILE_HOST_PC_SHIFT) - 1);
     if (bucket == 0) {
         atomic_fetch_add_explicit(&prof_host_pc_dropped_samples, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&prof_host_pc_dropped_by_class[category], 1,
+                                  memory_order_relaxed);
         return;
     }
     unsigned slot = (unsigned) ((bucket * UINT64_C(11400714819323198485)) >>
@@ -337,8 +342,11 @@ void ish_profile_record_host_pc(uintptr_t pc, uintptr_t lr, bool translated,
             break;
         }
     }
-    if (!pc_recorded)
+    if (!pc_recorded) {
         atomic_fetch_add_explicit(&prof_host_pc_dropped_samples, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&prof_host_pc_dropped_by_class[category], 1,
+                                  memory_order_relaxed);
+    }
 
     if (translated)
         return;
@@ -498,18 +506,215 @@ static const char *const profile_jit_kind_names[PROFILE_JIT_KIND_COUNT] = {
     "unmapped JIT code"
 };
 
+enum profile_jit_host_class {
+    PROFILE_JIT_HOST_NOP,
+    PROFILE_JIT_HOST_BRANCH,
+    PROFILE_JIT_HOST_LOAD_STORE,
+    PROFILE_JIT_HOST_DATA_PROCESSING,
+    PROFILE_JIT_HOST_OTHER,
+    PROFILE_JIT_HOST_CLASS_COUNT
+};
+
+enum profile_jit_hotspot_kind {
+    PROFILE_JIT_HOT_GUEST_OP,
+    PROFILE_JIT_HOT_SCAFFOLD
+};
+
+#define PROFILE_JIT_HOT_TOP 8
+
+struct profile_jit_sample {
+    enum profile_jit_hotspot_kind kind;
+    int module;
+    uint64_t offset;
+    uint64_t guest_pc;
+    unsigned units;
+    uint32_t guest_insn;
+    enum profile_jit_host_class host_class;
+    uint64_t samples;
+};
+
+struct profile_jit_hotspot {
+    int module;
+    uint64_t offset;
+    uint64_t guest_pc;
+    unsigned units;
+    uint32_t guest_insn;
+    uint64_t samples;
+    uint64_t host_class_samples[PROFILE_JIT_HOST_CLASS_COUNT];
+};
+
+static const char *const profile_jit_host_class_names[PROFILE_JIT_HOST_CLASS_COUNT] = {
+    "nop",
+    "branch",
+    "load/store",
+    "data processing",
+    "other"
+};
+
+static enum profile_jit_host_class profile_jit_host_classify(uint32_t insn) {
+    if (insn == 0xD503201Fu)
+        return PROFILE_JIT_HOST_NOP;
+    if ((insn & 0x7C000000u) == 0x14000000u ||
+        (insn & 0xFF000010u) == 0x54000000u ||
+        (insn & 0x7E000000u) == 0x34000000u ||
+        (insn & 0x7E000000u) == 0x36000000u ||
+        (insn & 0xFFFFFC1Fu) == 0xD61F0000u ||
+        (insn & 0xFFFFFC1Fu) == 0xD63F0000u ||
+        (insn & 0xFFFFFC1Fu) == 0xD65F0000u)
+        return PROFILE_JIT_HOST_BRANCH;
+    if ((insn & 0x3B000000u) == 0x39000000u ||
+        (insn & 0x3B200000u) == 0x38000000u ||
+        (insn & 0x3A000000u) == 0x28000000u)
+        return PROFILE_JIT_HOST_LOAD_STORE;
+    if ((insn & 0x1C000000u) == 0x10000000u ||
+        (insn & 0x0E000000u) == 0x0A000000u)
+        return PROFILE_JIT_HOST_DATA_PROCESSING;
+    return PROFILE_JIT_HOST_OTHER;
+}
+
 static enum profile_jit_kind profile_jit_classify(bool in_tlb, bool in_guest_op,
-                                                   uint32_t host_insn) {
+                                                   bool is_guest_spill, bool is_guest_reload) {
     if (in_tlb)
         return PROFILE_JIT_TLB;
-    if (in_guest_op && ((host_insn >> 5) & 31) == 1) {
-        uint32_t op = host_insn & 0xFFC00000u;
-        if (op == 0xF9000000u || op == 0xB9000000u || op == 0x3D800000u)
-            return PROFILE_JIT_SPILL;
-        if (op == 0xF9400000u || op == 0xB9400000u || op == 0x3DC00000u)
-            return PROFILE_JIT_RELOAD;
-    }
+    if (is_guest_spill)
+        return PROFILE_JIT_SPILL;
+    if (is_guest_reload)
+        return PROFILE_JIT_RELOAD;
     return in_guest_op ? PROFILE_JIT_GUEST_OP : PROFILE_JIT_SCAFFOLD;
+}
+
+static int profile_jit_sample_compare(const void *left, const void *right) {
+    const struct profile_jit_sample *a = left;
+    const struct profile_jit_sample *b = right;
+#define PROFILE_COMPARE_FIELD(field) \
+    do { if (a->field != b->field) return a->field < b->field ? -1 : 1; } while (0)
+    PROFILE_COMPARE_FIELD(kind);
+    PROFILE_COMPARE_FIELD(module);
+    PROFILE_COMPARE_FIELD(offset);
+    PROFILE_COMPARE_FIELD(guest_pc);
+    if (a->kind == PROFILE_JIT_HOT_GUEST_OP)
+        PROFILE_COMPARE_FIELD(guest_insn);
+    else
+        PROFILE_COMPARE_FIELD(units);
+#undef PROFILE_COMPARE_FIELD
+    return 0;
+}
+
+static bool profile_jit_same_hotspot(const struct profile_jit_sample *a,
+                                    const struct profile_jit_sample *b) {
+    return a->kind == b->kind && a->module == b->module &&
+           a->offset == b->offset && a->guest_pc == b->guest_pc &&
+           (a->kind == PROFILE_JIT_HOT_GUEST_OP
+                ? a->guest_insn == b->guest_insn
+                : a->units == b->units);
+}
+
+static void profile_jit_insert_hotspot(struct profile_jit_hotspot *top,
+                                       const struct profile_jit_hotspot *hotspot) {
+    unsigned pos = PROFILE_JIT_HOT_TOP;
+    while (pos > 0 && hotspot->samples > top[pos - 1].samples)
+        pos--;
+    if (pos == PROFILE_JIT_HOT_TOP)
+        return;
+    for (unsigned i = PROFILE_JIT_HOT_TOP - 1; i > pos; i--)
+        top[i] = top[i - 1];
+    top[pos] = *hotspot;
+}
+
+static void profile_jit_aggregate_samples(struct profile_jit_sample *samples,
+                                          size_t count,
+                                          struct profile_jit_hotspot *guest_top,
+                                          struct profile_jit_hotspot *scaffold_top,
+                                          uint64_t host_class_samples[2][PROFILE_JIT_HOST_CLASS_COUNT]) {
+    qsort(samples, count, sizeof(*samples), profile_jit_sample_compare);
+    for (size_t i = 0; i < count;) {
+        struct profile_jit_hotspot hotspot = {
+            .module = samples[i].module,
+            .offset = samples[i].offset,
+            .guest_pc = samples[i].guest_pc,
+            .units = samples[i].units,
+            .guest_insn = samples[i].guest_insn
+        };
+        size_t end = i;
+        while (end < count && profile_jit_same_hotspot(&samples[i], &samples[end])) {
+            hotspot.samples += samples[end].samples;
+            hotspot.host_class_samples[samples[end].host_class] += samples[end].samples;
+            host_class_samples[samples[end].kind][samples[end].host_class] +=
+                samples[end].samples;
+            end++;
+        }
+        profile_jit_insert_hotspot(samples[i].kind == PROFILE_JIT_HOT_GUEST_OP
+                                       ? guest_top : scaffold_top,
+                                   &hotspot);
+        i = end;
+    }
+}
+
+static size_t profile_jit_append_host_mix(
+    char *buf, size_t size, size_t used, const char *name,
+    const uint64_t host_class_samples[PROFILE_JIT_HOST_CLASS_COUNT]) {
+    uint64_t total = 0;
+    for (unsigned i = 0; i < PROFILE_JIT_HOST_CLASS_COUNT; i++)
+        total += host_class_samples[i];
+    if (total == 0)
+        return used;
+    used = profile_append(buf, size, used, "    %s (%llu samples):", name,
+                          (unsigned long long) total);
+    for (unsigned i = 0; i < PROFILE_JIT_HOST_CLASS_COUNT; i++) {
+        if (host_class_samples[i] == 0)
+            continue;
+        used = profile_append(buf, size, used, " %s %.1f%% (%llu)",
+                              profile_jit_host_class_names[i],
+                              (double) host_class_samples[i] * 100.0 / (double) total,
+                              (unsigned long long) host_class_samples[i]);
+    }
+    return profile_append(buf, size, used, "\n");
+}
+
+static size_t profile_jit_append_hotspots(
+    char *buf, size_t size, size_t used, const char *title,
+    const struct profile_jit_hotspot hotspots[PROFILE_JIT_HOT_TOP], bool guest_ops) {
+    if (hotspots[0].samples == 0)
+        return used;
+    used = profile_append(buf, size, used, "  %s (sample counts; top %u):\n",
+                          title, PROFILE_JIT_HOT_TOP);
+    for (unsigned i = 0; i < PROFILE_JIT_HOT_TOP && hotspots[i].samples != 0; i++) {
+        char path[256];
+        if (hotspots[i].module >= 0)
+            jit_module_path(hotspots[i].module, path, sizeof(path));
+        else
+            snprintf(path, sizeof(path), "[anonymous]");
+        const char *name = strrchr(path, '/');
+        name = name ? name + 1 : path;
+        if (hotspots[i].module >= 0) {
+            used = profile_append(buf, size, used, "    %s+0x%llx",
+                                  name, (unsigned long long) hotspots[i].offset);
+        } else {
+            used = profile_append(buf, size, used, "    guest PC 0x%llx",
+                                  (unsigned long long) hotspots[i].guest_pc);
+        }
+        if (guest_ops) {
+            used = profile_append(buf, size, used,
+                                  " (guest PC 0x%llx, insn %08x)",
+                                  (unsigned long long) hotspots[i].guest_pc,
+                                  hotspots[i].guest_insn);
+        } else {
+            used = profile_append(buf, size, used, " (segment PC 0x%llx, %u units)",
+                                  (unsigned long long) hotspots[i].guest_pc,
+                                  hotspots[i].units);
+        }
+        used = profile_append(buf, size, used, ": %llu samples; host classes:",
+                              (unsigned long long) hotspots[i].samples);
+        for (unsigned c = 0; c < PROFILE_JIT_HOST_CLASS_COUNT; c++) {
+            if (hotspots[i].host_class_samples[c] == 0)
+                continue;
+            used = profile_append(buf, size, used, " %s %llu",
+                                  profile_jit_host_class_names[c],
+                                  (unsigned long long) hotspots[i].host_class_samples[c]);
+        }
+        used = profile_append(buf, size, used, "\n");
+    }
+    return used;
 }
 #endif
 
@@ -523,11 +728,12 @@ static void profile_host_pc_label(char *buf, size_t size, uintptr_t pc) {
         uint64_t guest_off, guest_pc;
         unsigned units;
         uint32_t guest_insn, host_insn;
-        bool in_tlb, in_guest_op;
+        bool in_tlb, in_guest_op, is_guest_spill, is_guest_reload;
         uint64_t host_bucket = jit_offset &
             ~((UINT64_C(1) << ISH_PROFILE_HOST_PC_SHIFT) - 1);
         if (jit_host_pc_segment(pc, &module, &guest_off, &guest_pc, &units, &in_tlb,
-                                &in_guest_op, &guest_insn, &host_insn)) {
+                                &in_guest_op, &is_guest_spill, &is_guest_reload,
+                                &guest_insn, &host_insn)) {
             char path[256];
             if (module >= 0)
                 jit_module_path(module, path, sizeof(path));
@@ -536,7 +742,8 @@ static void profile_host_pc_label(char *buf, size_t size, uintptr_t pc) {
             const char *name = strrchr(path, '/');
             name = name ? name + 1 : path;
             const char *kind = profile_jit_kind_names[
-                profile_jit_classify(in_tlb, in_guest_op, host_insn)];
+                profile_jit_classify(in_tlb, in_guest_op,
+                                     is_guest_spill, is_guest_reload)];
             if (in_guest_op) {
                 snprintf(buf, size,
                          "translated+0x%llx -> %s+0x%llx (guest PC 0x%llx, %s, %08x -> %08x)",
@@ -545,10 +752,10 @@ static void profile_host_pc_label(char *buf, size_t size, uintptr_t pc) {
                          kind, guest_insn, host_insn);
             } else {
                 snprintf(buf, size,
-                         "translated+0x%llx -> %s+0x%llx (segment PC 0x%llx, %u units, JIT scaffold, host %08x)",
+                         "translated+0x%llx -> %s+0x%llx (segment PC 0x%llx, %u units, %s, host %08x)",
                          (unsigned long long) host_bucket, name,
                          (unsigned long long) guest_off, (unsigned long long) guest_pc, units,
-                         host_insn);
+                         kind, host_insn);
             }
         } else {
             snprintf(buf, size, "translated+0x%llx (host PC 0x%llx)",
@@ -649,6 +856,12 @@ size_t ish_profile_describe(char *buf, size_t size) {
     } top[ISH_PROFILE_SYSCALL_TOP] = {};
 #ifdef ISH_JIT
     uint64_t translated_kind_samples[PROFILE_JIT_KIND_COUNT] = {};
+    struct profile_jit_hotspot guest_op_hotspots[PROFILE_JIT_HOT_TOP] = {};
+    struct profile_jit_hotspot scaffold_hotspots[PROFILE_JIT_HOT_TOP] = {};
+    uint64_t translated_host_class_samples[2][PROFILE_JIT_HOST_CLASS_COUNT] = {};
+    struct profile_jit_sample *jit_samples = NULL;
+    size_t jit_sample_count = 0;
+    bool jit_sample_allocation_failed = false;
 #endif
     for (unsigned syscall_num = 0; syscall_num < ISH_PROFILE_SYSCALL_MAX; syscall_num++) {
         uint64_t calls = atomic_load_explicit(&prof_syscall_by_num[syscall_num], memory_order_relaxed);
@@ -700,12 +913,37 @@ size_t ish_profile_describe(char *buf, size_t size) {
                 uint64_t guest_off, guest_pc;
                 unsigned units;
                 uint32_t guest_insn, host_insn;
-                bool in_tlb, in_guest_op;
+                bool in_tlb, in_guest_op, is_guest_spill, is_guest_reload;
                 enum profile_jit_kind kind = PROFILE_JIT_UNMAPPED;
                 if (jit_host_pc_segment(sample_pc, &module, &guest_off, &guest_pc,
                                         &units, &in_tlb, &in_guest_op,
-                                        &guest_insn, &host_insn))
-                    kind = profile_jit_classify(in_tlb, in_guest_op, host_insn);
+                                        &is_guest_spill, &is_guest_reload,
+                                        &guest_insn, &host_insn)) {
+                    kind = profile_jit_classify(in_tlb, in_guest_op,
+                                                is_guest_spill, is_guest_reload);
+                    if (in_guest_op || kind == PROFILE_JIT_SCAFFOLD) {
+                        if (!jit_samples && !jit_sample_allocation_failed) {
+                            jit_samples = malloc(ISH_PROFILE_HOST_PC_BUCKETS *
+                                                 sizeof(*jit_samples));
+                            if (!jit_samples)
+                                jit_sample_allocation_failed = true;
+                        }
+                        if (jit_samples &&
+                            jit_sample_count < ISH_PROFILE_HOST_PC_BUCKETS) {
+                            jit_samples[jit_sample_count++] = (struct profile_jit_sample) {
+                                .kind = in_guest_op ? PROFILE_JIT_HOT_GUEST_OP :
+                                                      PROFILE_JIT_HOT_SCAFFOLD,
+                                .module = module,
+                                .offset = guest_off,
+                                .guest_pc = guest_pc,
+                                .units = units,
+                                .guest_insn = guest_insn,
+                                .host_class = profile_jit_host_classify(host_insn),
+                                .samples = samples
+                            };
+                        }
+                    }
+                }
                 translated_kind_samples[kind] += samples;
                 if (kind == PROFILE_JIT_SCAFFOLD) {
                     unsigned scaffold_pos = ISH_PROFILE_SYSCALL_TOP;
@@ -733,6 +971,13 @@ size_t ish_profile_describe(char *buf, size_t size) {
             top_host_pc[c][pos].samples = samples;
         }
     }
+#ifdef ISH_JIT
+    if (jit_sample_count != 0)
+        profile_jit_aggregate_samples(jit_samples, jit_sample_count,
+                                      guest_op_hotspots, scaffold_hotspots,
+                                      translated_host_class_samples);
+    free(jit_samples);
+#endif
     for (unsigned i = 0; i < ISH_PROFILE_HOST_PAIR_BUCKETS; i++) {
         if (atomic_load_explicit(&prof_host_pairs[i].state, memory_order_acquire) != 2)
             continue;
@@ -832,7 +1077,40 @@ size_t ish_profile_describe(char *buf, size_t size) {
                                       (double) classified_translated_samples,
                                   (unsigned long long) samples);
         }
+        uint64_t dropped = atomic_load_explicit(
+            &prof_host_pc_dropped_by_class[ISH_PROFILE_HOST_PC_TRANSLATED],
+            memory_order_relaxed);
+        uint64_t retained = host_translated_samples >= dropped
+            ? host_translated_samples - dropped : 0;
+        uint64_t unmapped = translated_kind_samples[PROFILE_JIT_UNMAPPED];
+        uint64_t mapped = classified_translated_samples >= unmapped
+            ? classified_translated_samples - unmapped : 0;
+        used = profile_append(buf, size, used,
+                              "  JIT segment-map coverage: %llu/%llu retained translated samples mapped, %llu unmapped, %llu dropped by the PC table.\n",
+                              (unsigned long long) mapped,
+                              (unsigned long long) retained,
+                              (unsigned long long) unmapped,
+                              (unsigned long long) dropped);
+        used = profile_jit_append_host_mix(
+            buf, size, used,
+            "guest-op ranges (includes inline TLB checks and guest-state accesses)",
+            translated_host_class_samples[PROFILE_JIT_HOT_GUEST_OP]);
+        used = profile_jit_append_host_mix(
+            buf, size, used, "JIT scaffold",
+            translated_host_class_samples[PROFILE_JIT_HOT_SCAFFOLD]);
+        used = profile_jit_append_hotspots(
+            buf, size, used,
+            "hottest guest instruction sites (all host samples in the instruction range)",
+            guest_op_hotspots, true);
+        used = profile_jit_append_hotspots(
+            buf, size, used, "hottest scaffold-owning segments",
+            scaffold_hotspots, false);
     }
+#endif
+#ifdef ISH_JIT
+    if (jit_sample_allocation_failed)
+        used = profile_append(buf, size, used,
+                              "  guest-site/scaffold aggregation unavailable: allocation failed.\n");
 #endif
 #ifdef ISH_JIT
     if (top_scaffold_pc[0].samples != 0) {
