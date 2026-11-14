@@ -1933,9 +1933,7 @@ static void emit_chain_ex(struct em *e, struct fiber_block *b, unsigned long *sl
     unsigned to_poke1, to_poke2 = 0;
     if (reg_cycle) {
         // Cycle counter lives in w15; poke is checked when it wraps. The
-        // count comes first so a direct link needs nothing but the branch:
-        // jit_link() turns the nop into `b <successor hot entry>`, skipping
-        // the slot load and the pc store (every native exit stores pc).
+        // count comes first so a direct link can skip the slow-path setup.
         // Forward edges do not count: a cycle of blocks always has an edge
         // to a lower or equal address (or a ret, which counts too), so poke
         // and the timer are still seen within bounded time.
@@ -1946,10 +1944,7 @@ static void emit_chain_ex(struct em *e, struct fiber_block *b, unsigned long *sl
             put(e, 0x720025FFu);                                                 // tst w15, #0x3ff
             to_poke1 = e->n; put(e, 0x54000000u);                                // b.eq poke
         }
-        if (!pic_on) {
-            if (link >= 0 && link < 2) e->link_at[link] = (int) e->n;
-            put(e, NOP);
-        } else if (self_loop) {
+        if (pic_on && self_loop) {
             // Still chained to itself (an invalidation restores the slot):
             // straight back to the loop head, promoted registers in place.
             ldr_ctx_block(e, 10);
@@ -1958,8 +1953,10 @@ static void emit_chain_ex(struct em *e, struct fiber_block *b, unsigned long *sl
             put(e, 0xEB0A013Fu);                                                 // cmp x9, x10
             put(e, 0x54000000u | ((uint32_t) (e->loop_head - (int) e->n) & 0x7ffff) << 5);   // b.eq loop_head
         }
-        if (self_loop) emit_canon(e);
     }
+    if (reg_cycle && !pic_on && link >= 0 && link < 2)
+        e->link_at[link] = (int) e->n;  // patch the first slow-path instruction
+    if (self_loop) emit_canon(e);
     ldr_block(e, 9, slot_off);
     unsigned to_unch = e->n; put(e, 0xB7F80009u);                 // tbnz x9, #63, unchained
     if (pic_on && reg_cycle) {
@@ -1992,11 +1989,10 @@ static void emit_chain_ex(struct em *e, struct fiber_block *b, unsigned long *sl
         to_poke2 = e->n; put(e, 0x35000008u);                                    // cbnz w8, poke
         put(e, 0xD1000000u | (FIBER_BLOCK_code << 10) | (9u << 5) | 8);          // sub x8, x9, #code
         put(e, 0xF9000000u | ((LOCAL_last_block / 8) << 10) | (1u << 5) | 8);    // str x8, [x1, #last_block]
-        // Direct link: jit_link() turns this nop into `b <successor hot entry>`.
-        if (!pic_on) {
-            if (link >= 0 && link < 2) e->link_at[link] = (int) e->n;
-            put(e, NOP);
-        }
+        // In non-PIC code the move is also the patch site: an unlinked edge
+        // needs it before generic dispatch, while a linked edge branches past it.
+        if (!pic_on && link >= 0 && link < 2)
+            e->link_at[link] = (int) e->n;
     }
     put(e, 0xAA0903FCu);                                                         // mov x28, x9
     emit_native_dispatch_ex(e, true);
