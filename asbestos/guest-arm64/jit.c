@@ -677,15 +677,11 @@ static void mov_guest_ref(struct em *e, int rd, uint64_t v, int scratch) {
 }
 
 // PIC: continue in another block's native code. x9 = its &code[0], x8 = its
-// native_entry (cross-module entry). Within the module x29 stays as it is and
-// the hot entry is used, so nothing after the branch waits for a load.
+// native_entry (the cross-module entry that loads the destination context).
+// Branch there directly; comparing contexts and conditionally skipping that
+// load costs more than reloading x29 on same-module transitions.
 static void enter_native(struct em *e) {
-    int co = (int) offsetof(struct fiber_block, jit_ctx) - FIBER_BLOCK_code;
-    put(e, 0xF8400000u | ((uint32_t) (co & 0x1ff) << 12) | (9u << 5) | 10);  // ldur x10, [x9, #jit_ctx-code]
-    put(e, 0xEB1D015Fu);                                                     // cmp x10, x29
-    put(e, 0x54000041u);                                                     // b.ne 1f
-    put(e, 0x91001108u);                                                     // add x8, x8, #4 (hot entry)
-    put(e, 0xD61F0100u);                                                     // 1: br x8
+    put(e, 0xD61F0100u);                                                     // br x8
 }
 
 // Shared exit stub: store the pinned guest registers, then br x8.

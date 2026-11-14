@@ -71,6 +71,16 @@ print(f(30))' >/tmp/_null
 
     _start
     python3 -c '
+import time
+def f(n):
+ if n<2: return n
+ return f(n-1)+f(n-2)
+t=time.perf_counter(); result=f(35)
+print(f"Result: {result} | Time: {time.perf_counter()-t:.4f} seconds")' >/tmp/_null
+    _end Python "fib(35)"
+
+    _start
+    python3 -c '
 s=""
 for i in range(10000): s+=str(i)
 print(len(s))' >/tmp/_null
