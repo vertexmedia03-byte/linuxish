@@ -288,7 +288,7 @@ static void jit_segment_installed(struct fiber_block *b, const struct jit_units 
 // are already in place: entry + 4*n_pinned); every exit to gadgets or the run
 // loop stores them back first. Other guest registers are loaded on first use
 // into the lazy pool and spilled on eviction or before a side exit. x8-x12
-// are scratch, x28 = stream pointer, x1 = cpu, x2 = tlb, x18 platform,
+// are scratch, x28 = stream pointer at exits, x1 = cpu, x2 = tlb, x18 platform,
 // x29/x30/sp untouched.
 static const int8_t pin_guest[] = {0, G_SP, 1, 2, 19, 3, 4, 21, 20, 22, 23, 30, 29, 24, 26, 5};
 static const int8_t pin_host[]  = {19, 20, 21, 22, 23, 24, 25, 26, 27, 3, 4, 5, 6, 7, 13, 14};
@@ -350,7 +350,6 @@ struct rec_seg {
 struct em {
     struct fiber_block *b; // block being translated
     unsigned idx;          // PIC: the translation's index in its module context
-    unsigned stream_off;   // PIC: x28's code-stream offset from the block
     uint64_t base;         // PIC: guest address the module's constants are relative to
     uint32_t buf[8192];
     unsigned n;
@@ -653,18 +652,6 @@ static void ldr_block(struct em *e, int rd, unsigned off) {
     }
     mov_block_addr(e, rd, off);
     put(e, 0xF9400000u | ((uint32_t) rd << 5) | (uint32_t) rd);             // ldr xd, [xd]
-}
-
-// PIC x28 points into the current block's code stream. For nearby block
-// headers, load the jump slot directly instead of resolving ctx->slot[idx].blk.
-static void ldr_chain_slot(struct em *e, int rd, unsigned off) {
-    int displacement = (int) off - (int) e->stream_off;
-    if (displacement >= -256 && displacement <= 255) {
-        put(e, 0xF8400000u | ((uint32_t) displacement & 0x1ffu) << 12 |
-              (28u << 5) | (uint32_t) rd);                                  // ldur xd, [x28, #disp]
-    } else {
-        ldr_block(e, rd, off);
-    }
 }
 
 // xd = guest address v
@@ -1855,7 +1842,6 @@ static void make_stubs(void) {
         if (id == STUB_GENERIC) {
             put(e, 0xF8400000u | ((uint32_t) (ne & 0x1ff) << 12) | (9u << 5) | 8);       // ldur x8, [x9, #native_entry-code]
             unsigned slow = e->n; put(e, 0xB4000008u);                                   // cbz x8, slow
-            put(e, 0x9100213Cu);                                                         // add x28, x9, #8 (successor stream)
             enter_native(e);
             patch_here(e, slow);
             put(e, 0xF8400000u | ((uint32_t) (boff & 0x1ff) << 12) | (9u << 5) | 11);    // ldur x11, [x9, #addr-code]
@@ -1908,7 +1894,7 @@ static void make_stubs(void) {
 // their stubs. The slot is loaded before the count, so the stubs all start
 // from it in x9.
 static void emit_chain_outlined(struct em *e, struct fiber_block *b, unsigned long *slot, int link) {
-    ldr_chain_slot(e, 9, (unsigned) ((char *) slot - (char *) b));
+    ldr_block(e, 9, (unsigned) ((char *) slot - (char *) b));
     unsigned to_unch = e->n; put(e, 0xB7F80009u);                     // tbnz x9, #63, unchained
     unsigned to_poke = ~0u;
     if (!e->chain_fwd) {   // forward edges do not count (see emit_chain_ex)
@@ -1916,7 +1902,6 @@ static void emit_chain_outlined(struct em *e, struct fiber_block *b, unsigned lo
         put(e, 0x720025FFu);                                           // tst w15, #0x3ff
         to_poke = e->n; put(e, 0x54000000u);                           // b.eq poke
     }
-    put(e, 0x9100213Cu);                                                // add x28, x9, #8 (successor stream)
     unsigned site = e->n; put(e, 0x14000000u);                         // b <link entry> (patched)
     if (link >= 0 && link < 2) e->link_at[link] = (int) site;
     // The unlinked branch skips itself. jit_chain_ok() atomically replaces
@@ -1972,10 +1957,7 @@ static void emit_chain_ex(struct em *e, struct fiber_block *b, unsigned long *sl
     if (reg_cycle && !pic_on && link >= 0 && link < 2)
         e->link_at[link] = (int) e->n;  // patch the first slow-path instruction
     if (self_loop) emit_canon(e);
-    if (pic_on && n_pinned && !self_loop)
-        ldr_chain_slot(e, 9, slot_off);
-    else
-        ldr_block(e, 9, slot_off);
+    ldr_block(e, 9, slot_off);
     unsigned to_unch = e->n; put(e, 0xB7F80009u);                 // tbnz x9, #63, unchained
     if (pic_on && reg_cycle) {
         // Direct link: jit_chain_ok() turns this branch into `b <successor's hot
@@ -1983,7 +1965,6 @@ static void emit_chain_ex(struct em *e, struct fiber_block *b, unsigned long *sl
         // lets the slot chain to a block entered there, so the branch needs no
         // check of its own; a successor it refuses marks the slot instead
         // (jit_chain_refused(), handled at `unchained` below).
-        put(e, 0x9100213Cu);                                                     // add x28, x9, #8 (successor stream)
         unsigned site = e->n; put(e, 0x14000000u);                               // b <link entry> (patched)
         if (link >= 0 && link < 2) e->link_at[link] = (int) site;
         patch_here(e, site);                                                     // unlinked: fall to the next line
@@ -1992,7 +1973,6 @@ static void emit_chain_ex(struct em *e, struct fiber_block *b, unsigned long *sl
         int ne = (int) offsetof(struct fiber_block, native_entry) - FIBER_BLOCK_code;
         put(e, 0xF8400000u | ((uint32_t) (ne & 0x1ff) << 12) | (9u << 5) | 8);  // ldur x8, [x9, #native_entry-code]
         unsigned slow = e->n; put(e, 0xB4000008u);                               // cbz x8, slow
-        put(e, 0x9100213Cu);                                                     // add x28, x9, #8 (successor stream)
         enter_native(e);
         patch_here(e, slow);
     }
@@ -2021,10 +2001,7 @@ static void emit_chain_ex(struct em *e, struct fiber_block *b, unsigned long *sl
     // timer / poke: enter the successor through the run loop
     if (reg_cycle) {
         if (self_loop) emit_canon(e);
-        if (pic_on && n_pinned && !self_loop)
-            ldr_chain_slot(e, 9, slot_off);
-        else
-            ldr_block(e, 9, slot_off);
+        ldr_block(e, 9, slot_off);
         unsigned unch2 = e->n; put(e, 0xB7F80009u);                              // tbnz x9, #63, unchained
         put(e, 0xF8400000u | ((uint32_t) (boff & 0x1ff) << 12) | (9u << 5) | 11);   // ldur x11, [x9, #addr-code]
         put(e, 0xF9000000u | ((CPU_pc / 8) << 10) | (1u << 5) | 11);             // str x11, [x1, #pc]
@@ -2207,7 +2184,6 @@ static void emit_indirect(struct em *e, struct fiber_block *b, const struct jit_
         unsigned slow = e->n; put(e, 0xB4000008u);                               // cbz x8, slow
         if (pic_on) {
             put(e, 0x91000000u | (FIBER_BLOCK_code << 10) | (9u << 5) | 9);      // add x9, x9, #code
-            put(e, 0x9100213Cu);                                                 // add x28, x9, #8 (successor stream)
             enter_native(e);
         } else {
             put(e, 0xD61F0100u);                                                 // br x8
@@ -2373,7 +2349,6 @@ static unsigned emit_segment(struct em *e, struct fiber_block *b, const struct j
     unsigned covered = 0, real = 0;   // real: units that emitted code
     bool ended = false;
     e->b = b;
-    e->stream_off = code_off(U->u[ui].start + 1);
     // Cold entry: load pinned; hot entry = +prologue_words. PIC: x9 = &code[0]
     // from x28 (= &code[first + 1] here) first, and the cross-module entry --
     // the last prologue word -- loads x29 from the block.
@@ -2854,7 +2829,7 @@ void ish_aot_register(const struct aot_module *m) {
 
 // Bump when emitted code changes unless the runtime remains compatible with
 // the older image encoding.
-#define JIT_CODE_VERSION 19
+#define JIT_CODE_VERSION 18
 
 // Everything the emitted code bakes in besides the gadgets it names: the
 // conventions, the struct layouts it loads from and the TLB / block cache
