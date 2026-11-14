@@ -479,17 +479,37 @@ static size_t profile_append(char *buf, size_t size, size_t used, const char *fo
 }
 
 #ifdef ISH_JIT
-static const char *profile_jit_kind(bool in_tlb, bool in_guest_op, uint32_t host_insn) {
+enum profile_jit_kind {
+    PROFILE_JIT_TLB,
+    PROFILE_JIT_SPILL,
+    PROFILE_JIT_RELOAD,
+    PROFILE_JIT_GUEST_OP,
+    PROFILE_JIT_SCAFFOLD,
+    PROFILE_JIT_UNMAPPED,
+    PROFILE_JIT_KIND_COUNT
+};
+
+static const char *const profile_jit_kind_names[PROFILE_JIT_KIND_COUNT] = {
+    "iSH TLB",
+    "iSH spill",
+    "iSH reload",
+    "guest-op lowering",
+    "JIT scaffold",
+    "unmapped JIT code"
+};
+
+static enum profile_jit_kind profile_jit_classify(bool in_tlb, bool in_guest_op,
+                                                   uint32_t host_insn) {
     if (in_tlb)
-        return "iSH TLB";
+        return PROFILE_JIT_TLB;
     if (in_guest_op && ((host_insn >> 5) & 31) == 1) {
         uint32_t op = host_insn & 0xFFC00000u;
         if (op == 0xF9000000u || op == 0xB9000000u || op == 0x3D800000u)
-            return "iSH spill";
+            return PROFILE_JIT_SPILL;
         if (op == 0xF9400000u || op == 0xB9400000u || op == 0x3DC00000u)
-            return "iSH reload";
+            return PROFILE_JIT_RELOAD;
     }
-    return in_guest_op ? "guest-op lowering" : "JIT scaffold";
+    return in_guest_op ? PROFILE_JIT_GUEST_OP : PROFILE_JIT_SCAFFOLD;
 }
 #endif
 
@@ -515,7 +535,8 @@ static void profile_host_pc_label(char *buf, size_t size, uintptr_t pc) {
                 snprintf(path, sizeof(path), "[unmapped]");
             const char *name = strrchr(path, '/');
             name = name ? name + 1 : path;
-            const char *kind = profile_jit_kind(in_tlb, in_guest_op, host_insn);
+            const char *kind = profile_jit_kind_names[
+                profile_jit_classify(in_tlb, in_guest_op, host_insn)];
             if (in_guest_op) {
                 snprintf(buf, size,
                          "translated+0x%llx -> %s+0x%llx (guest PC 0x%llx, %s, %08x -> %08x)",
@@ -620,6 +641,9 @@ size_t ish_profile_describe(char *buf, size_t size) {
         uint64_t cpu_ns;
         uint64_t wall_ticks;
     } top[ISH_PROFILE_SYSCALL_TOP] = {};
+#ifdef ISH_JIT
+    uint64_t translated_kind_samples[PROFILE_JIT_KIND_COUNT] = {};
+#endif
     for (unsigned syscall_num = 0; syscall_num < ISH_PROFILE_SYSCALL_MAX; syscall_num++) {
         uint64_t calls = atomic_load_explicit(&prof_syscall_by_num[syscall_num], memory_order_relaxed);
         uint64_t cpu_ns = atomic_load_explicit(&prof_syscall_cpu_ns_by_num[syscall_num], memory_order_relaxed);
@@ -662,6 +686,23 @@ size_t ish_profile_describe(char *buf, size_t size) {
                                                     memory_order_relaxed);
             if (samples == 0)
                 continue;
+            uintptr_t sample_pc = atomic_load_explicit(&prof_host_pc[c][i].sample_pc,
+                                                        memory_order_relaxed);
+#ifdef ISH_JIT
+            if (c == ISH_PROFILE_HOST_PC_TRANSLATED) {
+                int module;
+                uint64_t guest_off, guest_pc;
+                unsigned units;
+                uint32_t guest_insn, host_insn;
+                bool in_tlb, in_guest_op;
+                enum profile_jit_kind kind = PROFILE_JIT_UNMAPPED;
+                if (jit_host_pc_segment(sample_pc, &module, &guest_off, &guest_pc,
+                                        &units, &in_tlb, &in_guest_op,
+                                        &guest_insn, &host_insn))
+                    kind = profile_jit_classify(in_tlb, in_guest_op, host_insn);
+                translated_kind_samples[kind] += samples;
+            }
+#endif
             unsigned pos = ISH_PROFILE_SYSCALL_TOP;
             while (pos > 0 && samples > top_host_pc[c][pos - 1].samples)
                 pos--;
@@ -669,9 +710,7 @@ size_t ish_profile_describe(char *buf, size_t size) {
                 continue;
             for (unsigned j = ISH_PROFILE_SYSCALL_TOP - 1; j > pos; j--)
                 top_host_pc[c][j] = top_host_pc[c][j - 1];
-            top_host_pc[c][pos].pc =
-                atomic_load_explicit(&prof_host_pc[c][i].sample_pc,
-                                     memory_order_relaxed);
+            top_host_pc[c][pos].pc = sample_pc;
             top_host_pc[c][pos].samples = samples;
         }
     }
@@ -756,6 +795,26 @@ size_t ish_profile_describe(char *buf, size_t size) {
     if (prof_host_sampler_errno)
         used = profile_append(buf, size, used, "  host sampler setup/stop error: %d\n",
                               prof_host_sampler_errno);
+#ifdef ISH_JIT
+    uint64_t classified_translated_samples = 0;
+    for (unsigned i = 0; i < PROFILE_JIT_KIND_COUNT; i++)
+        classified_translated_samples += translated_kind_samples[i];
+    if (classified_translated_samples != 0) {
+        used = profile_append(buf, size, used,
+                              "  translated-code samples by generated-code category "
+                              "(1 ms host samples; share of classified samples):\n");
+        for (unsigned i = 0; i < PROFILE_JIT_KIND_COUNT; i++) {
+            uint64_t samples = translated_kind_samples[i];
+            if (samples == 0)
+                continue;
+            used = profile_append(buf, size, used, "    %s: %.1f%% (%llu samples)\n",
+                                  profile_jit_kind_names[i],
+                                  (double) samples * 100.0 /
+                                      (double) classified_translated_samples,
+                                  (unsigned long long) samples);
+        }
+    }
+#endif
     static const char *const host_pc_category_names[ISH_PROFILE_HOST_PC_CLASSES] = {
         "translated guest code",
         "native helpers during fiber_enter",
