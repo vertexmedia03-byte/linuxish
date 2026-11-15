@@ -290,12 +290,10 @@ static void jit_segment_installed(struct fiber_block *b, const struct jit_units 
 // into the lazy pool and spilled on eviction or before a side exit. x8-x12
 // are scratch, x28 = stream pointer at exits, x1 = cpu, x2 = tlb, x18 platform,
 // x29/x30/sp untouched.
-// Guest x28 is the hot libpython frame base; x7/x14 hold a last-page TLB cache.
-static const int8_t pin_guest[] = {0, G_SP, 1, 2, 19, 3, 4, 21, 20, 22, 23, 30, 29, 28};
-static const int8_t pin_host[]  = {19, 20, 21, 22, 23, 24, 25, 26, 27, 3, 4, 5, 6, 13};
+static const int8_t pin_guest[] = {0, G_SP, 1, 2, 19, 3, 4, 21, 20, 22, 23, 30, 29, 24, 26, 5};
+static const int8_t pin_host[]  = {19, 20, 21, 22, 23, 24, 25, 26, 27, 3, 4, 5, 6, 7, 13, 14};
 static const uint8_t lazy_pool[] = {16, 17, 0};
 #define H_CYC 15   // pinned mode: cpu->cycle lives in w15 between cold entry and exit
-enum { H_TLB_TAG = 7, H_TLB_BIAS = 14 };
 static const uint8_t pool_nopin[] = {0, 3, 4, 5, 6, 7, 13, 14, 15, 16, 17, 19, 20, 21, 22, 23, 24, 25, 26, 27};
 static int n_pinned;               // 0 when pinning is off
 static int prologue_words;          // cold-entry prologue length (hot entry offset)
@@ -318,9 +316,10 @@ static int8_t pin_of[33];          // guest -> host register, -1 if not pinned
 
 static void pin_init(bool on) {
     n_pinned = on ? (int) sizeof(pin_guest) : 0;
-    // PIC adds x9 = &code[0] before load_pinned() and the link entry
-    // (x29 = x9 - code) as its last word. load_pinned includes the cache tag.
-    prologue_words = n_pinned + (n_pinned ? 2 : 0) + (pic_on ? 3 : 0);
+    // load_pinned(); PIC adds x9 = &code[0] before it and the link entry
+    // (x29 = x9 - code) as its last word
+    // x9 = &code[0] (2 words), load_pinned(), cross-module entry (1 word)
+    prologue_words = n_pinned + (n_pinned ? 1 : 0) + (pic_on ? 3 : 0);
     memset(pin_of, -1, sizeof(pin_of));
     for (int i = 0; i < n_pinned; i++)
         pin_of[pin_guest[i]] = pin_host[i];
@@ -481,10 +480,8 @@ static void writeback(struct em *e, int g) {
 static void load_pinned(struct em *e) {
     for (int i = 0; i < n_pinned; i++)
         put(e, 0xF9400000u | ((greg_off(pin_guest[i]) / 8) << 10) | (1u << 5) | (uint32_t) pin_host[i]);
-    if (n_pinned) {
+    if (n_pinned)
         put(e, 0xB9400000u | ((CPU_cycle / 4) << 10) | (1u << 5) | H_CYC);   // ldr w15, [x1, #cycle]
-        put(e, 0xD2800000u | H_TLB_TAG);                                      // movz x7, #0 (invalidate TLB cache)
-    }
 }
 
 // loop block: promoted registers <-> canonical pinned state
@@ -693,10 +690,8 @@ static void make_exit_stub(void) {
     unsigned n = 0;
     for (int i = 0; i < n_pinned; i++)
         stub[n++] = 0xF9000000u | ((greg_off(pin_guest[i]) / 8) << 10) | (1u << 5) | (uint32_t) pin_host[i];
-    if (n_pinned) {
+    if (n_pinned)
         stub[n++] = 0xB9000000u | ((CPU_cycle / 4) << 10) | (1u << 5) | H_CYC;   // str w15, [x1, #cycle]
-        stub[n++] = 0xD2800000u | H_TLB_TAG;                                      // invalidate TLB cache
-    }
     stub[n++] = 0xD61F0100u;   // br x8
     uint8_t *dst = region_alloc(n * 4);
     install_code(dst, stub, n);
@@ -765,13 +760,6 @@ static void branch_stub(struct em *e, unsigned spos, int kind) {
     put(e, 0);
 }
 
-static void patch_here(struct em *e, unsigned at);
-
-// Bit 62 marks a valid cached page; bit 63 distinguishes write mappings.
-static uint32_t tlb_cache_tag_insn(unsigned rd, unsigned rn, bool write) {
-    return (write ? 0xB2420400u : 0xB2420000u) | (rn << 5) | rd;
-}
-
 // Field kinds for register remapping.
 enum { F_NONE, F_ZR, F_SP };
 
@@ -802,37 +790,18 @@ static uint32_t remap(struct em *e, uint32_t x, int kd, int kn, int km, int ka, 
     return out;
 }
 
-// Inline TLB lookup for guest address in T_A (bytes = access size). Pinned
-// mode keeps the most recently used page and bias in x7/x14 across native
-// blocks; x7's top bits encode valid/read-vs-write. On a hit, either adds the
-// host bias to T_A or leaves the guest offset in T_A for a register-offset op.
+// Inline TLB lookup for guest address in T_A (bytes = access size). On a hit,
+// either adds the host bias to T_A or leaves the guest offset in T_A and bias
+// in T_Q for a register-offset memory instruction.
 static void tlb_lookup_impl(struct em *e, unsigned bytes, bool write, unsigned spos,
                             bool add_host_bias) {
     // A translated host access may fault; keep guest state recoverable first.
     flush_dirty(e);
     e->hflags = false;   // the checks below use cmp
     unsigned profile_start = e->n;
-    unsigned cache_done = ~0u;
-    if (n_pinned) {
-        put(e, 0x9240BC00u | (T_A << 5) | T_A);                       // mask guest address to 48 bits
-        int stale_off = (int) offsetof(struct tlb, stale) - (int) offsetof(struct tlb, entries);
-        put(e, 0xF8400000u | ((uint32_t) (stale_off & 0x1ff) << 12) | (2u << 5) | T_P); // ldur x8, [x2, #stale]
-        put(e, 0xAA000000u | (T_P << 16) | (T_A << 5) | T_P);       // orr x8, x9, x8
-        put(e, tlb_cache_tag_insn(T_P, T_P, write));                // add valid/access-mode cache flags
-        put(e, 0xCB000000u | (H_TLB_TAG << 16) | (T_P << 5) | T_I); // sub x10, x8, x7
-        put(e, 0xF100001Fu | ((0x1000 - bytes) << 10) | (T_I << 5));
-        unsigned cache_miss = e->n;
-        put(e, 0x54000008u);                                        // b.hi full TLB lookup
-        if (add_host_bias)
-            put(e, 0x8B000000u | (H_TLB_BIAS << 16) | (T_A << 5) | T_A); // add x9, x14, x9
-        cache_done = e->n;
-        put(e, 0x14000000u);                                        // b past full TLB lookup
-        patch_here(e, cache_miss);                                  // slow hit refreshes; bailout clears the tag
-    } else {
-        put(e, 0x9240BC00u | (T_A << 5) | T_A);                     // and x9, x9, #0xffffffffffff
-    }
     put(e, 0xCA400000u | (T_A << 16) | (13u << 10) | (T_A << 5) | T_I);  // eor x10, x9, x9, lsr #13
     put(e, 0xD3400000u | (12u << 16) | (24u << 10) | (T_I << 5) | T_I); // ubfx x10, x10, #12, #13
+    put(e, 0x9240BC00u | (T_A << 5) | T_A);                    // and x9, x9, #0xffffffffffff
     put(e, 0x8B000000u | (T_I << 16) | (5u << 10) | (2u << 5) | T_I);    // add x10, x2, x10, lsl #5
     unsigned pair_off = write ? offsetof(struct tlb_entry, data_minus_addr) :
                                 offsetof(struct tlb_entry, page);
@@ -851,14 +820,8 @@ static void tlb_lookup_impl(struct em *e, unsigned bytes, bool write, unsigned s
     put(e, 0xCB000000u | (T_E << 16) | (T_P << 5) | T_I);      // sub x10, x8, x11
     put(e, 0xF100001Fu | ((0x1000 - bytes) << 10) | (T_I << 5));   // cmp x10, #(0x1000-bytes)
     branch_stub(e, spos, 2);                                   // b.hi stub
-    if (n_pinned) {
-        put(e, tlb_cache_tag_insn(H_TLB_TAG, T_E, write));         // cache validated page and access type
-        put(e, 0xAA000000u | (T_Q << 16) | (31u << 5) | H_TLB_BIAS); // mov x14, x12
-    }
     if (add_host_bias)
         put(e, 0x8B000000u | (T_Q << 16) | (T_A << 5) | T_A);  // add x9, x12, x9
-    if (cache_done != ~0u)
-        patch_here(e, cache_done);
     if (cm_on && e->ntlb_ranges < sizeof(e->tlb_ranges) / sizeof(e->tlb_ranges[0])) {
         e->tlb_ranges[e->ntlb_ranges].start = profile_start;
         e->tlb_ranges[e->ntlb_ranges++].end = e->n;
@@ -874,10 +837,9 @@ static void tlb_lookup_regoff(struct em *e, unsigned bytes, bool write, unsigned
 }
 
 static uint32_t tlb_regoff_insn(uint32_t x, uint32_t base, int rt) {
-    unsigned bias = n_pinned ? H_TLB_BIAS : T_Q;
-    // UXTX uses T_A as an unscaled guest offset and the current host bias.
+    // UXTX uses T_A as an unscaled guest address offset and T_Q as its host bias.
     return (x & 0xC0C00000u) | base | ((uint32_t) T_A << 16) |
-        (3u << 13) | (bias << 5) | (uint32_t) rt;
+        (3u << 13) | ((uint32_t) T_Q << 5) | (uint32_t) rt;
 }
 
 // Load/store translation. Returns false if the form is unsupported.
@@ -1853,10 +1815,8 @@ static void make_syscall_stub(void) {
         return;
     for (int i = 0; i < n_pinned; i++)
         put(e, 0xF9000000u | ((greg_off(pin_guest[i]) / 8) << 10) | (1u << 5) | (uint32_t) pin_host[i]);
-    if (n_pinned) {
+    if (n_pinned)
         put(e, 0xB9000000u | ((CPU_cycle / 4) << 10) | (1u << 5) | H_CYC);
-        put(e, 0xD2800000u | H_TLB_TAG);                            // invalidate TLB cache
-    }
     mov_imm64(e, 0, INT_SYSCALL);
     mov_host_ptr(e, 8, (const void *) jit_fiber_exit);
     put(e, 0xD61F0100u);   // br x8
@@ -2865,7 +2825,7 @@ void ish_aot_register(const struct aot_module *m) {
 
 // Bump when emitted code changes unless the runtime remains compatible with
 // the older image encoding.
-#define JIT_CODE_VERSION 20
+#define JIT_CODE_VERSION 18
 
 // Everything the emitted code bakes in besides the gadgets it names: the
 // conventions, the struct layouts it loads from and the TLB / block cache
