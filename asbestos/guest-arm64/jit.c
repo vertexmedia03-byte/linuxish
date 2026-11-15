@@ -828,6 +828,7 @@ static void tlb_lookup_impl(struct em *e, unsigned bytes, bool write, unsigned s
         cache_done = e->n;
         put(e, 0x14000000u);                                        // b past full TLB lookup
         patch_here(e, cache_miss);                                  // slow hit refreshes; bailout clears the tag
+        put(e, 0xD2800000u | H_TLB_TAG);                            // invalidate before fallback can bail out
     } else {
         put(e, 0x9240BC00u | (T_A << 5) | T_A);                     // and x9, x9, #0xffffffffffff
     }
